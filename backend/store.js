@@ -1,4 +1,38 @@
 const jobs = new Map();
+import fs from 'fs';
+import path from 'path';
+
+function appendToCSV(id, newLeads, niche) {
+  if (newLeads.length === 0) return;
+  const dir = path.join(process.cwd(), 'exports');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  
+  const file = path.join(dir, `leads-${id}.csv`);
+  
+  if (!fs.existsSync(file)) {
+    const headers = `"Name","Phone","Website","Primary Email","Secondary Emails","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+    fs.writeFileSync(file, headers);
+  }
+  
+  const rows = newLeads.map(l => [
+    l.business_name || '',
+    l.phone || '',
+    l.website || '',
+    l.primary_email || '',
+    l.secondary_emails || '',
+    l.owner_name || '',
+    l.owner_role || '',
+    l.rating || '',
+    l.reviews || '',
+    l.intent || '',
+    l.score || '',
+    l.website_quality || '',
+    l.city || '',
+    niche || ''
+  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n') + '\n';
+  
+  fs.appendFileSync(file, rows);
+}
 
 // =========================
 // CREATE JOB
@@ -85,6 +119,10 @@ export function updateJob(id, updates = {}) {
     });
 
     job.leads.push(...newLeads);
+    
+    // Auto-save immediately efficiently mapping disk
+    appendToCSV(id, newLeads, job.niche);
+    
     delete updates.leads;
   }
 

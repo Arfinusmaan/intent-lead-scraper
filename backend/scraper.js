@@ -64,77 +64,111 @@ export async function scrapeGoogleMaps(
   async function extractWebsiteData(ctx, website) {
     if (!website) return { primary: "", secondary: [], owner: "" };
     
-    let page;
     let emails = [];
     let owner = "";
-
-    try {
-      page = await ctx.newPage();
-      
-      const cleanWeb = website.replace(/\/$/, '');
-      const urls = [
-        cleanWeb, 
-        cleanWeb + "/contact", 
-        cleanWeb + "/about",
-        cleanWeb + "/about-us",
-        cleanWeb + "/team"
-      ];
-
-      for (const u of urls) {
-        try {
-          await page.goto(u, {
-            timeout: 5000,
-            waitUntil: "domcontentloaded",
-          });
-
-          const html = await page.content();
-          
-          const found = [
-            ...html.matchAll(
-              /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g,
-            ),
-          ].map((m) => m[0].toLowerCase()).filter(isValidEmail);
-          
-          emails.push(...found);
-
-          if (!owner) {
-             const text = await page.evaluate(() => document.body.innerText || "");
-             const match = text.match(/([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})\s*(?:-|,|is the|:)?\s*(CEO|Owner|Founder|Director|President|Co-founder|Principal)/i) || 
-                           text.match(/(CEO|Owner|Founder|Director|President|Co-founder|Principal)\s*(?:-|,|:)?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i);
-             if (match) {
-                 const extracted = match[1].length > match[2].length ? match[1] : match[2];
-                 owner = extracted.trim().replace(/^CEO$|^Owner$|^Founder$|^Director$|^President$|^Co-founder$|^Principal$/i, '').trim();
-             }
-          }
-
-        } catch {}
-      }
-
-      emails = [...new Set(emails)];
-
-      let primary = "";
-      const priority = ["contact@", "info@", "hello@", "admin@", "support@", "sales@"];
-
-      for (const e of emails) {
-        if (!primary && priority.some((p) => e.startsWith(p))) {
-          primary = e;
+    
+    let pagesToVisit = [];
+    const cleanWeb = website.replace(/\/$/, '');
+    
+    // Helper Extractors
+    function extractOwnerFromText(text) {
+        if (owner) return;
+        const match = text.match(/([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})\s*(?:-|,|is the|:)?\s*(CEO|Owner|Founder|Director|President|Co-founder|Principal)/i) || 
+                      text.match(/(CEO|Owner|Founder|Director|President|Co-founder|Principal)\s*(?:-|,|:)?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i);
+        if (match) {
+            const extracted = match[1].length > match[2].length ? match[1] : match[2];
+            owner = extracted.trim().replace(/^CEO$|^Owner$|^Founder$|^Director$|^President$|^Co-founder$|^Principal$/i, '').trim();
         }
-      }
-
-      if (!primary && emails.length > 0) {
-        primary = emails[0];
-      }
-
-      return {
-        primary: primary,
-        secondary: emails.filter((e) => e !== primary),
-        owner: owner
-      };
-    } catch {
-      return { primary: "", secondary: [], owner: "" };
-    } finally {
-      if (page) await page.close();
     }
+    
+    function extractEmailsFromHtml(html) {
+       const found = [...html.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
+                     .map(m => m[0].toLowerCase()).filter(isValidEmail);
+       emails.push(...found);
+    }
+
+    // 1. Visit homepage to discover links
+    let homePage;
+    try {
+      homePage = await ctx.newPage();
+      await homePage.goto(website, { timeout: 8000, waitUntil: "domcontentloaded" });
+      
+      const text = await homePage.evaluate(() => document.body.innerText || "");
+      extractOwnerFromText(text);
+      
+      const html = await homePage.content();
+      extractEmailsFromHtml(html);
+
+      const rawLinks = await homePage.$$eval('a', as => as.map(a => ({ href: a.href, text: a.innerText.toLowerCase() })));
+      
+      const baseDomain = new URL(website).hostname.replace(/^www\./, '');
+      
+      const keywords = ['contact', 'about', 'team', 'staff', 'clinic', 'company', 'our story', 'management'];
+      const skipTerms = ['facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com', 'mailto:', 'tel:'];
+      
+      let validUrls = new Set();
+      
+      for (const link of rawLinks) {
+          if (!link.href) continue;
+          try {
+             // same domain check
+             if (!link.href.includes(baseDomain) && !link.href.startsWith('/')) continue;
+             
+             // Ignore socials/mailto
+             if (skipTerms.some(term => link.href.toLowerCase().includes(term))) continue;
+             
+             // Keyword match
+             if (keywords.some(k => link.text.includes(k) || link.href.toLowerCase().includes(k))) {
+                 let fullUrl = link.href.startsWith('/') ? cleanWeb + link.href : link.href;
+                 fullUrl = fullUrl.split('#')[0].split('?')[0]; // sanitize
+                 validUrls.add(fullUrl);
+             }
+          } catch {}
+      }
+      
+      pagesToVisit = [...validUrls];
+    } catch {} finally {
+      if (homePage) await homePage.close();
+    }
+    
+    // Fallback if no nav links found
+    if (pagesToVisit.length === 0) {
+       pagesToVisit = [cleanWeb + "/contact", cleanWeb + "/about"];
+    }
+    
+    // Limit to max 5 URLs
+    pagesToVisit = pagesToVisit.slice(0, 5);
+    
+    // Visit each filtered link sequentially
+    for (const u of pagesToVisit) {
+        if (u === cleanWeb || u === website) continue;
+        
+        let p;
+        try {
+           p = await ctx.newPage();
+           await p.goto(u, { timeout: 6000, waitUntil: "domcontentloaded" });
+           
+           const text = await p.evaluate(() => document.body.innerText || "");
+           extractOwnerFromText(text);
+           
+           const html = await p.content();
+           extractEmailsFromHtml(html);
+        } catch {} finally {
+           if (p) await p.close();
+        }
+        await new Promise(r => setTimeout(r, 600)); // Add delay to avoid ban
+    }
+    
+    emails = [...new Set(emails)];
+    
+    let primary = "";
+    const priority = ["contact@", "info@", "hello@", "admin@", "support@", "sales@"];
+    for (const e of emails) {
+        if (!primary && priority.some((p) => e.startsWith(p))) primary = e;
+    }
+    if (!primary && emails.length > 0) primary = emails[0];
+    
+    return { primary, secondary: emails.filter(e => e !== primary), owner };
   }
 
   // =========================
