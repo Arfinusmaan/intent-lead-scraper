@@ -2,22 +2,105 @@ import express from 'express';
 import cors from 'cors';
 import bodyParser from 'body-parser';
 import { nanoid } from 'nanoid';
+import multer from 'multer';
+import csvParser from 'csv-parser';
+import stream from 'stream';
 
-import { scrapeGoogleMaps } from './scraper.js';
-import { createJob, getJob, updateJob, setStopFlag, jobs } from './store.js';
+import { scrapeGoogleMaps, enrichCSVList } from './scraper.js';
+import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs } from './store.js';
 import { log } from './utils.js';
 
 const app = express();
 const PORT = 3001;
 
+const upload = multer({ storage: multer.memoryStorage() });
+
 app.use(cors());
 app.use(bodyParser.json());
+
+// Initialize store from disk
+loadJobsFromDisk();
+
+// =========================
+// CSV UPLOAD & ENRICHMENT
+// =========================
+app.post('/upload-csv', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const mode = req.body.mode || 'hybrid';
+  const workers = req.body.workers || 3;
+  const jobId = nanoid();
+  const leads = [];
+
+  const bufferStream = new stream.PassThrough();
+  bufferStream.end(req.file.buffer);
+
+  bufferStream
+    .pipe(csvParser())
+    .on('data', (data) => {
+       const lead = {
+         business_name: data['Company Name'] || data.Company || data.Name || data.business_name || '',
+         phone: data['Phone number'] || data.Phone || data.phone || '',
+         website: data.website || data.Website || '',
+         primary_email: data['Primary Email'] || data.primary_email || '',
+         owner_name: data['Owner Name'] || data.owner_name || '',
+         owner_role: data['Owner Role'] || data.owner_role || '',
+         rating: data.Rating || data.rating || '',
+         reviews: data.Review || data.Reviews || data.reviews || '',
+         intent: data.Intent || data.intent || 'LOW',
+         city: data.City || data.city || '',
+       };
+       leads.push(lead);
+    })
+    .on('end', () => {
+       createJob(jobId, {
+         niche: 'CSV Upload',
+         location: 'Multiple',
+         filterType: 'all',
+         status: 'running',
+         progress: 0,
+         leads: leads,
+         logs: [],
+         currentCity: 'Parsing',
+         createdAt: new Date(),
+         stopFlag: false
+       });
+       
+       log(`🚀 Started: CSV Enrichment for ${leads.length} leads`, jobId);
+       
+       enrichCSVList(leads, jobId, workers, (progressData) => {
+          const job = getJob(jobId);
+          if (!job || job.stopFlag) return;
+          if (typeof progressData === 'number') {
+            updateJob(jobId, { progress: progressData });
+          } else {
+            updateJob(jobId, {
+              progress: progressData.progress ?? job.progress,
+              currentCity: progressData.city ?? job.currentCity
+            });
+          }
+       }).then(() => {
+          const job = getJob(jobId);
+          if (!job) return;
+          const highIntent = job.leads.filter(l => l.intent === 'HIGH').length;
+          const mediumIntent = job.leads.filter(l => l.intent === 'MEDIUM').length;
+          const lowIntent = job.leads.filter(l => l.intent === 'LOW').length;
+          const stats = { highIntent, mediumIntent, lowIntent, total: job.leads.length };
+          updateJob(jobId, { status: job.stopFlag ? 'cancelled' : 'completed', progress: 100, stats });
+       }).catch(err => {
+          log(`❌ Error: ${err.message}`, jobId);
+          updateJob(jobId, { status: 'failed', error: err.message });
+       });
+
+       res.json({ jobId });
+    });
+});
 
 // =========================
 // START SCRAPE
 // =========================
 app.post('/scrape', async (req, res) => {
-  const { niche, location, filterType = 'all' } = req.body;
+  const { niche, location, filterType = 'all', mode = 'hybrid', workers = 3 } = req.body;
 
   const jobId = nanoid();
 
@@ -44,6 +127,8 @@ app.post('/scrape', async (req, res) => {
         location,
         filterType,
         jobId,
+        mode,
+        workers,
         (progressData) => {
           const job = getJob(jobId);
           if (!job || job.stopFlag) return;
@@ -74,36 +159,23 @@ app.post('/scrape', async (req, res) => {
       const job = getJob(jobId);
       if (!job) return;
 
-      // =========================
-      // IF STOPPED → STILL FINALIZE
-      // =========================
+      // Compute stats regardless of stop state — needed for CSV download
+      const highIntent   = job.leads.filter(l => l.intent === 'HIGH').length;
+      const mediumIntent = job.leads.filter(l => l.intent === 'MEDIUM').length;
+      const lowIntent    = job.leads.filter(l => l.intent === 'LOW').length;
+      const stats = { highIntent, mediumIntent, lowIntent, total: job.leads.length };
+
       if (job.stopFlag) {
-        log(`🛑 Cancelled`, jobId);
-
-        updateJob(jobId, {
-          status: 'completed', // 🔥 important for download
-          progress: job.progress || 100
-        });
-
+        // Keep status as 'cancelled' — don't overwrite what the /stop endpoint set
+        log(`🛑 Cancelled with ${job.leads.length} leads collected`, jobId);
+        updateJob(jobId, { stats });
         return;
       }
-
-      // =========================
-      // STATS
-      // =========================
-      const highIntent = job.leads.filter(l => l.intent === 'HIGH').length;
-      const mediumIntent = job.leads.filter(l => l.intent === 'MEDIUM').length;
-      const lowIntent = job.leads.filter(l => l.intent === 'LOW').length;
 
       updateJob(jobId, {
         status: 'completed',
         progress: 100,
-        stats: {
-          highIntent,
-          mediumIntent,
-          lowIntent,
-          total: job.leads.length
-        }
+        stats
       });
 
       log(`✅ Completed: ${job.leads.length} leads`, jobId);
@@ -144,14 +216,13 @@ app.get('/csv/:id', (req, res) => {
     return res.status(400).json({ error: 'No data available' });
   }
 
-  const headers = `"Name","Phone","Website","Primary Email","Secondary Emails","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+  const headers = `"Name","Phone","Website","Primary Email","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
 
-  const rows = job.leads.map(l => [
+  const formatRow = (l) => [
     l.business_name || '',
     l.phone || '',
     l.website || '',
     l.primary_email || '',
-    l.secondary_emails || '',
     l.owner_name || '',
     l.owner_role || '',
     l.rating || '',
@@ -161,11 +232,24 @@ app.get('/csv/:id', (req, res) => {
     l.website_quality || '',
     l.city || '',
     job.niche || ''
-  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n');
+  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
+
+  const withEmail = job.leads.filter(l => l.primary_email);
+  const withoutEmail = job.leads.filter(l => !l.primary_email);
+
+  let csvContent = "";
+  if (withEmail.length > 0) {
+      csvContent += `"--- WITH EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
+  }
+  if (withoutEmail.length > 0) {
+      csvContent += `"--- WITHOUT EMAIL ---"\n` + headers + withoutEmail.map(formatRow).join('\n') + '\n';
+  }
+
+  if (!csvContent) csvContent = headers + job.leads.map(formatRow).join('\n');
 
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
-  res.send(headers + rows);
+  res.send(csvContent);
 });
 
 // =========================
@@ -180,6 +264,7 @@ app.get('/history', (req, res) => {
       total: j.leads.length,
       createdAt: j.createdAt,
       status: j.status,
+      pinned: j.pinned || false,
       highIntent: j.stats?.highIntent || 0,
       mediumIntent: j.stats?.mediumIntent || 0,
       lowIntent: j.stats?.lowIntent || 0
@@ -190,24 +275,102 @@ app.get('/history', (req, res) => {
 // =========================
 // STOP
 // =========================
+// =========================
+// STOP
+// =========================
 app.post('/stop/:id', (req, res) => {
   const jobId = req.params.id;
-
-  const job = getJob(jobId);
-  if (!job) {
-    return res.status(404).json({ error: 'Job not found' });
-  }
-
   setStopFlag(jobId, true);
-
-  updateJob(jobId, {
-    status: 'cancelled',
-    cancelled: true
-  });
-
+  updateJob(jobId, { status: 'cancelled', cancelled: true });
   log(`🛑 Stop requested`, jobId);
-
   res.json({ status: 'stopping' });
+});
+
+// =========================
+// PAUSE / RESUME
+// =========================
+app.post('/pause/:id', (req, res) => {
+  setPauseFlag(req.params.id, true);
+  log(`⏸️ Paused`, req.params.id);
+  res.json({ status: 'paused' });
+});
+
+app.post('/resume/:id', (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  
+  setPauseFlag(req.params.id, false);
+  updateJob(req.params.id, { status: 'running' });
+  log(`▶️ Resumed`, req.params.id);
+  
+  // Dead Resume: Server restarted and Playwright is gone. Restart it.
+  if (job.workerRunning === false && job.niche !== 'CSV Upload') {
+     job.workerRunning = true;
+     // Re-trigger background async scrape, it will pick up from job.lastCityIndex
+     (async () => {
+        try {
+          await scrapeGoogleMaps(
+            job.niche,
+            job.location,
+            job.filterType,
+            job.id,
+            job.mode || 'hybrid',
+            job.workers || 3,
+            (progressData) => {
+              const currentJob = getJob(job.id);
+              if (!currentJob || currentJob.stopFlag) return;
+              if (typeof progressData === 'number') {
+                updateJob(job.id, { progress: progressData });
+              } else {
+                updateJob(job.id, {
+                  progress: progressData.progress ?? currentJob.progress,
+                  currentCity: progressData.city ?? currentJob.currentCity
+                });
+                if (progressData.leads && Array.isArray(progressData.leads)) {
+                  progressData.leads.forEach(lead => updateJob(job.id, { leads: [lead] }));
+                }
+              }
+            }
+          );
+          
+          const finalJob = getJob(job.id);
+          if (!finalJob) return;
+          const highIntent   = finalJob.leads.filter(l => l.intent === 'HIGH').length;
+          const mediumIntent = finalJob.leads.filter(l => l.intent === 'MEDIUM').length;
+          const lowIntent    = finalJob.leads.filter(l => l.intent === 'LOW').length;
+          const stats = { highIntent, mediumIntent, lowIntent, total: finalJob.leads.length };
+
+          if (finalJob.stopFlag) {
+            updateJob(job.id, { stats, workerRunning: false });
+            return;
+          }
+          updateJob(job.id, { status: 'completed', progress: 100, stats, workerRunning: false });
+          log(`✅ Completed Resumed Scan`, job.id);
+        } catch (err) {
+          log(`❌ Error Resuming: ${err.message}`, job.id);
+          updateJob(job.id, { status: 'failed', error: err.message, workerRunning: false });
+        }
+     })();
+  }
+  
+  res.json({ status: 'resumed' });
+});
+
+app.delete('/job/:id', (req, res) => {
+  const jobId = req.params.id;
+  deleteJob(jobId);
+  res.json({ success: true });
+});
+
+// =========================
+// PIN JOB
+// =========================
+app.post('/pin/:id', (req, res) => {
+  const job = getJob(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Not found' });
+  
+  updateJob(req.params.id, { pinned: !job.pinned });
+  res.json({ success: true, pinned: !job.pinned });
 });
 
 app.listen(PORT, () => {

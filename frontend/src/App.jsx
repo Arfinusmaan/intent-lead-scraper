@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History } from "lucide-react";
+import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -13,6 +13,10 @@ export default function App() {
   const [job, setJob] = useState(null);
   const [loading, setLoading] = useState(false);
   const [stopping, setStopping] = useState(false);
+  
+  const [mode, setMode] = useState("hybrid");
+  const [workers, setWorkers] = useState(3);
+  const [uploadLoading, setUploadLoading] = useState(false);
   
   const [history, setHistory] = useState([]);
 
@@ -29,13 +33,38 @@ export default function App() {
       const res = await fetch("http://localhost:3001/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ niche, location, filterType }),
+        body: JSON.stringify({ niche, location, filterType, mode, workers }),
       });
       const data = await res.json();
       setJobId(data.jobId);
     } catch (err) {
       console.error("Start failed:", err);
       setLoading(false);
+    }
+  };
+
+  const uploadCSV = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setUploadLoading(true);
+    setJob(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mode", mode);
+    formData.append("workers", workers);
+
+    try {
+      const res = await fetch("http://localhost:3001/upload-csv", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      setJobId(data.jobId);
+    } catch (err) {
+      console.error("Upload failed", err);
+    } finally {
+      setUploadLoading(false);
+      e.target.value = null;
     }
   };
 
@@ -76,6 +105,55 @@ export default function App() {
     } catch {} finally {
       setStopping(false);
     }
+  };
+
+  const pauseScraping = async () => {
+    if (!jobId) return;
+    try {
+      await fetch(`http://localhost:3001/pause/${jobId}`, { method: "POST" });
+    } catch {}
+  };
+
+  const resumeScraping = async () => {
+    if (!jobId) return;
+    try {
+      await fetch(`http://localhost:3001/resume/${jobId}`, { method: "POST" });
+    } catch {}
+  };
+
+  const deleteJob = async (id) => {
+    if (!confirm("Delete this mission and its CSV data forever?")) return;
+    try {
+      await fetch(`http://localhost:3001/job/${id}`, { method: "DELETE" });
+      fetchHistory();
+    } catch {}
+  };
+
+  const togglePinStatus = async (id) => {
+    try {
+      await fetch(`http://localhost:3001/pin/${id}`, { method: "POST" });
+      fetchHistory();
+      if (jobId === id) {
+         const res = await fetch(`http://localhost:3001/results/${jobId}`);
+         setJob(await res.json());
+      }
+    } catch {}
+  };
+
+  const saveAndSleep = async () => {
+    if (!jobId) return;
+    try {
+      const currentJobRes = await fetch(`http://localhost:3001/results/${jobId}`);
+      const currentJob = await currentJobRes.json();
+      if (!currentJob.pauseFlag) {
+         await pauseScraping();
+      }
+      if (!currentJob.pinned) {
+         await fetch(`http://localhost:3001/pin/${jobId}`, { method: "POST" });
+         fetchHistory();
+      }
+      alert("✅ Session Safely Pinned to Hard Drive!\n\nYou can now safely close the browser and terminate the server. When you boot up next time, find this sweep in the History tab and hit Play to resume.");
+    } catch {}
   };
 
   return (
@@ -184,6 +262,43 @@ export default function App() {
                     <span>{loading ? "Scanning" : "Start"}</span>
                   </button>
                 </div>
+                
+                {/* Mode, Workers, and CSV row */}
+                <div className="flex flex-col md:flex-row gap-3 mt-3 relative z-10">
+                  <div className="flex-1 relative">
+                    <select
+                      value={mode}
+                      onChange={(e) => setMode(e.target.value)}
+                      disabled={loading || uploadLoading}
+                      className="w-full h-14 bg-white/5 border border-white/10 rounded-xl px-4 text-white hover:bg-white/10 focus:border-purple-500/50 outline-none transition-all appearance-none text-sm"
+                    >
+                      <option value="normal" className="bg-gray-900">Mode: Normal (Memory Safe)</option>
+                      <option value="hybrid" className="bg-gray-900">Mode: Hybrid (Fast & Popular)</option>
+                      <option value="parallel" className="bg-gray-900">Mode: Parallel (RAM Heavy)</option>
+                    </select>
+                  </div>
+                  <div className="flex-1 relative">
+                    <select
+                      value={workers}
+                      onChange={(e) => setWorkers(parseInt(e.target.value))}
+                      disabled={loading || uploadLoading}
+                      className="w-full h-14 bg-white/5 border border-white/10 rounded-xl px-4 text-white hover:bg-white/10 focus:border-purple-500/50 outline-none transition-all appearance-none text-sm"
+                    >
+                      <option value="1" className="bg-gray-900">1 Background Worker</option>
+                      <option value="2" className="bg-gray-900">2 Background Workers</option>
+                      <option value="3" className="bg-gray-900">3 Background Workers (8GB RAM)</option>
+                      <option value="4" className="bg-gray-900">4 Background Workers</option>
+                      <option value="5" className="bg-gray-900">5 Background Workers (16GB RAM)</option>
+                    </select>
+                  </div>
+                  <div className="flex-1 relative">
+                    <label className="w-full h-14 flex items-center justify-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-xl cursor-pointer transition-all font-bold text-sm">
+                        {uploadLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Download className="w-4 h-4" />}
+                        {uploadLoading ? "Starting Engine..." : "Direct CSV Enrich"}
+                        <input type="file" accept=".csv" className="hidden" onChange={uploadCSV} disabled={uploadLoading || loading} />
+                    </label>
+                  </div>
+                </div>
               </div>
 
               {/* Progress UI */}
@@ -222,11 +337,13 @@ export default function App() {
                       </div>
 
                       <div>
-                        <h3 className="text-2xl font-bold text-white capitalize">{job.status}</h3>
+                        <h3 className="text-2xl font-bold text-white capitalize">{job.pauseFlag ? "Paused" : job.status}</h3>
                         <p className="text-slate-400 text-sm mt-1 max-w-xs truncate">
-                          {job.status === "running" 
-                            ? `Sweeping sector: ${job.currentCity || location}` 
-                            : job.cancelled ? "Terminated by user" : "Extraction complete"}
+                          {job.pauseFlag 
+                            ? "Engine on standby"
+                            : job.status === "running" 
+                              ? `Sweeping sector: ${job.currentCity || location}` 
+                              : job.cancelled ? "Terminated by user" : "Extraction complete"}
                         </p>
                       </div>
                     </div>
@@ -247,17 +364,51 @@ export default function App() {
                         </button>
                         
                         {job.status === "running" && (
-                          <button
-                            onClick={stopScraping}
-                            disabled={stopping}
-                            className="flex items-center justify-center gap-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-xl transition-all font-medium text-sm border border-rose-500/20"
-                          >
-                            <Square className="w-3 h-3 fill-current" /> {stopping ? "Halting..." : "Halt Engine"}
-                          </button>
+                          <div className="flex flex-col gap-2">
+                            <div className="flex gap-2">
+                              <button
+                                onClick={job.pauseFlag ? resumeScraping : pauseScraping}
+                                className={`flex-1 flex items-center justify-center gap-2 px-4 py-2 rounded-xl transition-all font-medium text-sm border ${job.pauseFlag ? "bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border-amber-500/20" : "bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border-blue-500/20"}`}
+                              >
+                                {job.pauseFlag ? <Play className="w-3 h-3 fill-current" /> : <div className="w-3 h-3 border-l-2 border-r-2 border-current" />}
+                                {job.pauseFlag ? "Resume" : "Pause"}
+                              </button>
+                              <button
+                                onClick={stopScraping}
+                                disabled={stopping}
+                                className="flex-1 flex items-center justify-center gap-2 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 px-4 py-2 rounded-xl transition-all font-medium text-sm border border-rose-500/20"
+                              >
+                                <Square className="w-3 h-3 fill-current" /> {stopping ? "Halting..." : "Stop"}
+                              </button>
+                            </div>
+                            <button
+                              onClick={saveAndSleep}
+                              className="w-full flex items-center justify-center gap-2 bg-purple-500/10 hover:bg-purple-500/20 text-purple-400 px-4 py-2 rounded-xl transition-all font-bold text-sm border border-purple-500/20"
+                            >
+                              <Bookmark className="w-4 h-4 fill-current" /> Save Session & Sleep
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
                   </div>
+
+                  {/* Live Logs Array Box */}
+                  {job.logs && job.logs.length > 0 && (
+                    <div className="mt-6 bg-[#0a0a0a] border border-white/5 rounded-xl p-4 max-h-40 overflow-y-auto font-mono text-[10px] sm:text-xs">
+                      {job.logs.slice().reverse().map((logMsg, i) => (
+                        <div key={i} className={`mb-1 pb-1 border-b border-white/[0.02] ${
+                          logMsg.includes('❌') ? 'text-rose-400' :
+                          logMsg.includes('📧') ? 'text-emerald-400' :
+                          logMsg.includes('👤') ? 'text-blue-400' :
+                          logMsg.includes('✅') ? 'text-purple-400 font-bold' :
+                          'text-slate-500'
+                        }`}>
+                          {logMsg}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </motion.div>
               )}
 
@@ -365,6 +516,12 @@ export default function App() {
                         </button>
                         <button onClick={() => window.open(`http://localhost:3001/csv/${j.id}`)} className="text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 px-3 py-2 rounded-lg transition-all">
                           CSV
+                        </button>
+                        <button onClick={() => togglePinStatus(j.id)} className={`text-xs font-bold ${j.pinned ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30' : 'bg-slate-500/20 text-slate-400 hover:bg-slate-500/30'} p-2 rounded-lg transition-all`} title={j.pinned ? "Unpin Session" : "Pin Session (Save)"}>
+                          <Bookmark className={`w-4 h-4 ${j.pinned ? 'fill-current' : ''}`} />
+                        </button>
+                        <button onClick={() => deleteJob(j.id)} className="text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 p-2 rounded-lg transition-all" title="Delete">
+                          <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
                     </div>

@@ -1,4 +1,4 @@
-import { getJob, updateJob } from './store.js';
+import { getJob } from './store.js';
 
 // =========================
 // LOGGER (FIXED + FAST)
@@ -9,20 +9,19 @@ export function log(message, jobId = null) {
 
   console.log(msg);
 
-  // Attach logs to job (SAFE - no async)
+  // Push directly to job.logs — skip updateJob to avoid running the
+  // full leads/enrichLead pipeline on every single log line
   if (jobId) {
     try {
       const job = getJob(jobId);
       if (job) {
         job.logs = job.logs || [];
         job.logs.push(msg);
-
-        updateJob(jobId, {
-          logs: job.logs.slice(-200)
-        });
+        // Trim to last 200 in-place
+        if (job.logs.length > 200) job.logs.splice(0, job.logs.length - 200);
       }
     } catch (err) {
-      console.log("Log attach error:", err.message);
+      console.log('Log attach error:', err.message);
     }
   }
 }

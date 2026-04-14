@@ -1,6 +1,6 @@
 import axios from 'axios';
 import * as cheerio from 'cheerio';
-import { log, getRandomUA } from './utils.js';
+import { getRandomUA } from './utils.js';
 
 // =========================
 // CONFIG
@@ -11,13 +11,9 @@ const OWNER_KEYWORDS = [
 ];
 
 const TEAM_PATHS = [
-  '/', // ✅ homepage FIRST (fast win)
-  '/about',
-  '/about-us',
-  '/team',
-  '/our-team',
-  '/staff',
-  '/leadership'
+  '/',          // homepage — fastest win
+  '/about',     // most common
+  '/about-us',  // second most common
 ];
 
 const NAME_REGEX =
@@ -46,13 +42,13 @@ export async function extractDecisionMaker(websiteUrl) {
 
     for (const r of results) {
       if (r.status === 'fulfilled' && r.value) {
-        log(`👤 Found owner: ${r.value}`);
+        console.log(`👤 Found owner: ${r.value}`);
         return r.value;
       }
     }
 
   } catch (err) {
-    log(`Owner extraction failed: ${err.message}`);
+    // silent — don't crash the worker pool
   }
 
   return '';

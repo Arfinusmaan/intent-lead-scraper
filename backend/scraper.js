@@ -1,462 +1,470 @@
 import { chromium } from "playwright";
-import { randomDelay, log } from "./utils.js";
+import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
-import { getJob } from "./store.js";
-import { scoreLead } from "./intentScorer.js";
+import { getJob, updateJob, setPauseFlag } from "./store.js";
 import { extractDecisionMaker } from "./decisionMaker.js";
-import { safeGoto, retry } from "./utils.js";
 
-// =========================
-// SAFE CLICK (PREVENT FREEZE)
-// =========================
-async function safeClick(element) {
-  try {
-    await element.click({ force: true, timeout: 2000 });
-  } catch {
-    try {
-      await element.evaluate((el) => el.click());
-    } catch {}
-  }
+// Normalize phone numbers — strip everything except digits and leading +
+function cleanPhone(phone) {
+  if (!phone) return '';
+  return phone.replace(/[^\d+\-()\s]/g, '').trim();
 }
 
-export async function scrapeGoogleMaps(
-  niche,
-  location,
-  filterType,
-  jobId,
-  onProgress = () => {},
-) {
-  if (!getJob(jobId)) return [];
-
-  const browser = await chromium.launch({ headless: false });
-  const context = await browser.newContext();
-
-  let allLeads = [];
-
-  // =========================
-  // JUNK FILTERS
-  // =========================
-  const JUNK_DOMAINS = [
-    'sentry.io', 'wix.com', 'wordpress.com', 'squarespace.com', 
-    'github.com', 'google.com', 'yahoo.com', 'hotmail.com',
-    'example.com', 'domain.com', 'namecheap.com'
-  ];
-  
-  const JUNK_PREFIXES = [
-    'tracking', 'no-reply', 'noreply', 'mailer', 'daemon',
-    'postmaster', 'abuse', 'webmaster', 'automated'
-  ];
-
-  function isValidEmail(email) {
-    if (!email) return false;
-    const parts = email.split('@');
-    if (parts.length !== 2) return false;
-    const [prefix, domain] = parts;
-    if (JUNK_DOMAINS.some(d => domain.includes(d))) return false;
-    if (JUNK_PREFIXES.some(p => prefix.includes(p))) return false;
-    if (email.endsWith('.png') || email.endsWith('.jpg') || email.endsWith('.jpeg') || email.endsWith('.gif') || email.endsWith('.css') || email.endsWith('.webp')) return false;
-    return true;
+// =========================
+// WEBSITE WORKER POOL (RAM OPTIMIZED)
+// =========================
+class WebsiteWorkerPool {
+  constructor(context, maxWorkers = 3) {
+    this.context = context;
+    this.maxWorkers = maxWorkers;
+    this.activeWorkers = 0;
+    this.queue = [];
   }
 
-  // =========================
-  // INDEPENDENT WEBSITE DATA EXTRACTION
-  // =========================
-  async function extractWebsiteData(ctx, website) {
+  async run(website, callback) {
+    if (this.activeWorkers >= this.maxWorkers) {
+      return new Promise((resolve) => {
+        this.queue.push({ website, callback, resolve });
+      });
+    }
+
+    this.activeWorkers++;
+    try {
+      const result = await this.extract(website);
+      await callback(result); // await — callback is async (calls extractDecisionMaker)
+    } finally {
+      this.activeWorkers--;
+      if (this.queue.length > 0) {
+        const next = this.queue.shift();
+        this.run(next.website, next.callback).then(next.resolve);
+      }
+    }
+  }
+
+  async extract(website) {
     if (!website) return { primary: "", secondary: [], owner: "" };
     
     let emails = [];
     let owner = "";
-    
-    let pagesToVisit = [];
     const cleanWeb = website.replace(/\/$/, '');
     
-    // Helper Extractors
-    function extractOwnerFromText(text) {
-        if (owner) return;
-        const match = text.match(/([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})\s*(?:-|,|is the|:)?\s*(CEO|Owner|Founder|Director|President|Co-founder|Principal)/i) || 
-                      text.match(/(CEO|Owner|Founder|Director|President|Co-founder|Principal)\s*(?:-|,|:)?\s*([A-Z][a-z]+(?:\s[A-Z][a-z]+){1,2})/i);
-        if (match) {
-            const extracted = match[1].length > match[2].length ? match[1] : match[2];
-            owner = extracted.trim().replace(/^CEO$|^Owner$|^Founder$|^Director$|^President$|^Co-founder$|^Principal$/i, '').trim();
-        }
-    }
-    
-    function extractEmailsFromHtml(html) {
-       const found = [...html.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
-                     .map(m => m[0].toLowerCase()).filter(isValidEmail);
-       emails.push(...found);
-    }
+    const isValidEmail = (email) => {
+        const JUNK_DOMAINS = ['sentry.io', 'wix.com', 'google.com', 'example.com', 'domain.com', 'cloudflare.com', 'amazonaws.com'];
+        const JUNK_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.css', '.js'];
+        if (!email || email.includes('google.com')) return false;
+        if (JUNK_EXTENSIONS.some(ext => email.toLowerCase().endsWith(ext))) return false;
+        const domain = email.split('@')[1];
+        if (!domain) return false;
+        return !JUNK_DOMAINS.some(d => domain.includes(d));
+    };
 
-    // 1. Visit homepage to discover links
+    const extractOwner = (text) => {
+        if (owner) return;
+        const roles = "CEO|Owner|Founder|Director|President|Principal|Manager|Partner";
+        const res = text.match(new RegExp(`([A-Z][a-z]+(?:\\s[A-Z][a-z]+){1,2})\\s*(?:-|,|is the|:)?\\s*(${roles})`, "i")) || 
+                    text.match(new RegExp(`(${roles})\\s*(?:-|,|:)?\\s*([A-Z][a-z]+(?:\\s[A-Z][a-z]+){1,2})`, "i"));
+        if (res) owner = (res[1].length > res[2].length ? res[1] : res[2]).trim();
+    };
+
+    // =========================
+    // RAM SAVER: Block images & media, allow fonts & CSS
+    // =========================
+    const blockRoute = async (page) => {
+      await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        // Block heavy resources but allow scripts/websockets so modern sites don't break and skip
+        if (['image', 'media'].includes(type)) {
+          return route.abort();
+        }
+        return route.continue();
+      });
+    };
+
+    let pagesToVisit = [website];
     let homePage;
     try {
-      homePage = await ctx.newPage();
+      homePage = await this.context.newPage();
+      await blockRoute(homePage);
       await homePage.goto(website, { timeout: 8000, waitUntil: "domcontentloaded" });
       
-      const text = await homePage.evaluate(() => document.body.innerText || "");
-      extractOwnerFromText(text);
-      
       const html = await homePage.content();
-      extractEmailsFromHtml(html);
+      const text = await homePage.evaluate(() => document.body?.innerText || '');
+      extractOwner(text);
+      
+      const found = [...html.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
+        .map(m => m[0].toLowerCase())
+        .filter(isValidEmail);
+      emails.push(...found);
 
-      const rawLinks = await homePage.$$eval('a', as => as.map(a => ({ href: a.href, text: a.innerText.toLowerCase() })));
+      // Also scan for mailto: links
+      const mailtoLinks = [...html.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})/gi)]
+        .map(m => m[1].toLowerCase())
+        .filter(isValidEmail);
+      emails.push(...mailtoLinks);
+
+      const navLinks = await homePage.$$eval('a', as => as.map(a => ({ href: a.href || '', text: (a.innerText || '').toLowerCase() })));
+      const keywords = ['contact', 'about', 'team', 'staff', 'owner', 'meet', 'appointment', 'book'];
       
-      const baseDomain = new URL(website).hostname.replace(/^www\./, '');
-      
-      const keywords = ['contact', 'about', 'team', 'staff', 'clinic', 'company', 'our story', 'management'];
-      const skipTerms = ['facebook.com', 'instagram.com', 'linkedin.com', 'twitter.com', 'mailto:', 'tel:'];
-      
-      let validUrls = new Set();
-      
-      for (const link of rawLinks) {
-          if (!link.href) continue;
-          try {
-             // same domain check
-             if (!link.href.includes(baseDomain) && !link.href.startsWith('/')) continue;
-             
-             // Ignore socials/mailto
-             if (skipTerms.some(term => link.href.toLowerCase().includes(term))) continue;
-             
-             // Keyword match
-             if (keywords.some(k => link.text.includes(k) || link.href.toLowerCase().includes(k))) {
-                 let fullUrl = link.href.startsWith('/') ? cleanWeb + link.href : link.href;
-                 fullUrl = fullUrl.split('#')[0].split('?')[0]; // sanitize
-                 validUrls.add(fullUrl);
-             }
-          } catch {}
+      for (const link of navLinks) {
+          if (keywords.some(k => link.text.includes(k)) && link.href.startsWith(cleanWeb)) {
+              pagesToVisit.push(link.href);
+          }
       }
-      
-      pagesToVisit = [...validUrls];
-    } catch {} finally {
-      if (homePage) await homePage.close();
+    } catch (e) {
+      // Silently continue — page may have failed but we move on
+    } finally {
+      if (homePage) await homePage.close().catch(() => {});
     }
+
+    // Limit to top 4 pages total (home + about + contact + appointment)
+    pagesToVisit = [...new Set(pagesToVisit)].slice(0, 4);
     
-    // Fallback if no nav links found
-    if (pagesToVisit.length === 0) {
-       pagesToVisit = [cleanWeb + "/contact", cleanWeb + "/about"];
-    }
-    
-    // Limit to max 5 URLs
-    pagesToVisit = pagesToVisit.slice(0, 5);
-    
-    // Visit each filtered link sequentially
-    for (const u of pagesToVisit) {
-        if (u === cleanWeb || u === website) continue;
-        
+    for (const url of pagesToVisit.slice(1)) {
         let p;
         try {
-           p = await ctx.newPage();
-           await p.goto(u, { timeout: 6000, waitUntil: "domcontentloaded" });
-           
-           const text = await p.evaluate(() => document.body.innerText || "");
-           extractOwnerFromText(text);
-           
-           const html = await p.content();
-           extractEmailsFromHtml(html);
-        } catch {} finally {
-           if (p) await p.close();
+            p = await this.context.newPage();
+            await blockRoute(p);
+            await p.goto(url, { timeout: 6000, waitUntil: "domcontentloaded" });
+            const pText = await p.evaluate(() => document.body?.innerText || '');
+            extractOwner(pText);
+            const pHtml = await p.content();
+            const pEmails = [
+              ...[...pHtml.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)].map(m => m[0].toLowerCase()),
+              ...[...pHtml.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})/gi)].map(m => m[1].toLowerCase())
+            ].filter(isValidEmail);
+            emails.push(...pEmails);
+        } catch {
+          // Skip failed sub-pages
+        } finally {
+            if (p) await p.close().catch(() => {});
         }
-        await new Promise(r => setTimeout(r, 600)); // Add delay to avoid ban
     }
-    
+
     emails = [...new Set(emails)];
-    
-    let primary = "";
-    const priority = ["contact@", "info@", "hello@", "admin@", "support@", "sales@"];
-    for (const e of emails) {
-        if (!primary && priority.some((p) => e.startsWith(p))) primary = e;
-    }
-    if (!primary && emails.length > 0) primary = emails[0];
+    const priority = ["contact@", "info@", "hello@", "support@"];
+    let primary = emails.find(e => priority.some(p => e.startsWith(p))) || emails[0] || "";
     
     return { primary, secondary: emails.filter(e => e !== primary), owner };
   }
+}
 
-  // =========================
-  // SCRAPE SUB-LOCATION
-  // =========================
-  async function scrapeSubLocation(subLocation, index, totalLocations) {
-    let leads = [];
-    let processedLeads = new Set();
+async function checkPause(jobId) {
+    while (getJob(jobId)?.pauseFlag) {
+        await new Promise(r => setTimeout(r, 1000));
+    }
+}
 
-    const queries = [
-      `${niche} in ${subLocation}`
-    ];
+export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode = 'hybrid', workerCount = 3, onProgress = () => {}) {
+  const job = getJob(jobId);
+  if (!job) return [];
 
-    for (const query of queries) {
-      if (getJob(jobId)?.stopFlag) break;
+  const browser = await chromium.launch({ headless: false, args: ['--window-size=1920,1080'] });
+  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
+  const workerPool = new WebsiteWorkerPool(context, parseInt(workerCount));
 
-      const page = await context.newPage();
+  let subLocations = await getSubLocations(location);
+  let allLeads = [];
 
-      await page.route("**/*", (route) => {
-        const type = route.request().resourceType();
-        if (["image", "media", "font"].includes(type)) route.abort();
-        else route.continue();
-      });
-
-      const url = `https://www.google.com/maps/search/${encodeURIComponent(query)}`;
-      log(`🚀 ${subLocation} → ${query}`);
-
+  const processSubLocation = async (subLoc, sIdx) => {
+    updateJob(jobId, { lastProcessedIndex: sIdx });
+    await checkPause(jobId);
+    if (getJob(jobId)?.stopFlag) return;
+    const page = await context.newPage();
+    
+    try {
+      const query = `${niche} in ${subLoc}`;
+      log(`🚀 Searching: ${query}`, jobId);
+      await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded' });
+      
       // =========================
-      // MAP LOAD (RETRY + COOKIE FIX)
+      // CAPTCHA / BOT DETECTION ENGINE AUTO-PAUSE
       // =========================
-      let loaded = false;
-
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await safeGoto(page, url, 15000);
-
-          const rejectBtn = page.locator('button:has-text("Reject")');
-          if (await rejectBtn.count()) {
-            await rejectBtn.click().catch(() => {});
+      const pageText = await page.content();
+      if (pageText.includes('action="CaptchaRedirect"') || pageText.includes('Our systems have detected unusual traffic')) {
+          log(`🛑 CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
+          setPauseFlag(jobId, true);
+          updateJob(jobId, { currentCity: "PAUSED: Captcha Action Required" });
+          // Wait safely until the user manually hits 'Resume'
+          while (getJob(jobId)?.pauseFlag) {
+             await new Promise(r => setTimeout(r, 2000));
           }
-
-          await page.waitForSelector('div[role="feed"]', { timeout: 15000 });
-
-          loaded = true;
-          break;
-        } catch {
-          await page.waitForTimeout(2000);
-        }
+          log(`▶️ Engine Resumed after Captcha!`, jobId);
+          // Refresh the page now that it's solved
+          await page.reload({ waitUntil: 'domcontentloaded' });
       }
 
-      if (!loaded) {
-        await page.close();
-        continue;
-      }
+      try {
+        const rejectBtn = page.locator('button:has-text("Reject"), button:has-text("Accept")').first();
+        if (await rejectBtn.count()) await rejectBtn.click();
+      } catch {}
 
-      const selector = 'div[role="feed"] a[href*="/place"]';
+      await page.waitForSelector('div[role="feed"]', { timeout: 10000 }).catch(() => {});
+      
+      let noNewCount = 0;
+      const processedNames = new Set();
+      let lastPaneTitle = "";
+      let totalFoundInCity = 0;
 
-      // =========================
-      // FULL SCROLL
-      // =========================
-      let last = 0;
-      let noNew = 0;
-
-      while (noNew < 4) {
-        if (getJob(jobId)?.stopFlag) break;
-
-        const count = await page.locator(selector).count();
-
-        if (count === last) noNew++;
-        else {
-          last = count;
-          noNew = 0;
-        }
-
-        await page.locator('div[role="feed"]').evaluate((el) => {
-          el.scrollTop = el.scrollHeight;
-        });
-
-        await randomDelay(500, 900);
-      }
-
-      const listings = page.locator(selector);
-      const total = await listings.count();
-
-      log(`📦 ${subLocation}: ${total}`);
-
-      for (let i = 0; i < total; i++) {
-        if (getJob(jobId)?.stopFlag) break;
-
-        try {
-          const item = listings.nth(i);
-          const itemText = await item.textContent().catch(() => "");
-          if (itemText.toLowerCase().includes("temporarily closed") || itemText.toLowerCase().includes("permanently closed")) {
-            continue;
-          }
-
-          const name = await item.getAttribute("aria-label");
-          log(`📊 Extracted: ${name || "Unknown"}`);
-          if (!name || !name.trim()) continue;
-
-          const href = await item.getAttribute("href");
-
-          await item.scrollIntoViewIfNeeded();
-
-          const oldUrl = page.url();
-          try {
-            await safeClick(item);
-            log("👉 Opening listing");
-            await page.waitForFunction((old) => document.location.href !== old, oldUrl, { timeout: 5000 }).catch(() => null);
-            await page.waitForTimeout(1000); // UI stabilization
-          } catch {
-            if (href) {
-              await page.goto(href, { waitUntil: "domcontentloaded" });
-              await page.waitForTimeout(1500);
-            } else continue;
-          }
-
-          // =========================
-          // EXTRACT DATA (STABLE & SCOPED)
-          // =========================
+      while (noNewCount < 3 && !getJob(jobId)?.stopFlag) {
+          const feedLocator = page.locator('div[role="feed"]');
+          if (await feedLocator.count() === 0) break; // Check if the feed exists before scrolling
           
-          let scope = page;
-          try {
-             // Find the detail pane for the newly opened business
-             const pane = page.locator(`[role="main"][aria-label="${name}"]`).first();
-             await pane.waitFor({ state: 'attached', timeout: 5000 });
-             if ((await pane.count()) > 0) {
-                scope = pane;
-                log("👉 Successfully scoped to detail pane");
-             }
-          } catch {
-             log("⚠️ Detail pane did not emerge, using full page scope");
-          }
+          const listings = feedLocator.locator('a[href*="/place"]');
+          const batchCount = await listings.count();
+          let foundNewInBatch = false;
 
-          // PHONE
-          const phone = await scope
-            .locator(
-              'button[data-item-id*="phone:tel:"], button[data-item-id="phone"], button[aria-label*="Call"], a[href^="tel:"]',
-            )
-            .first()
-            .textContent({ timeout: 1500 })
-            .catch(() => "");
+          for (let i = 0; i < batchCount; i++) {
+              await checkPause(jobId);
+              if (getJob(jobId)?.stopFlag) break;
+              
+              let name = "";
+              let item;
+              try {
+                 item = listings.nth(i);
+                 name = await item.getAttribute("aria-label");
+              } catch { continue; }
+              
+              if (!name || processedNames.has(name)) continue;
+              processedNames.add(name);
+              foundNewInBatch = true;
+              totalFoundInCity++;
 
-          // WEBSITE (ensure independent extraction without reuse)
-          let website = "";
-          const wElements = await scope.locator('a[data-item-id="authority"], a[aria-label*="Website"]').all();
-          for (let w of wElements) {
-              const wHref = await w.getAttribute("href");
-              if (wHref && wHref.startsWith("http") && !wHref.includes("google.com")) {
-                  website = wHref;
+              try {
+                  log(`👉 Clicking: ${name}`, jobId);
+                  const safeName = name.replace(/"/g, '\\"');
+                  let targetItem = feedLocator.locator(`a[aria-label="${safeName}"]`).first();
+                  
+                  if (await targetItem.count() === 0) {
+                      // Fallback: If label vanished from virtual DOM, grab directly by index
+                      targetItem = listings.nth(i);
+                      if (await targetItem.count() === 0) {
+                          log(`⚠️ Element vanished entirely, skipping.`, jobId);
+                          continue;
+                      }
+                  }
+
+                  try { await targetItem.scrollIntoViewIfNeeded(); } catch {}
+                  
+                  try {
+                     await targetItem.click({ force: true, timeout: 3000 });
+                  } catch {
+                     await targetItem.evaluate(node => node.click()).catch(() => {});
+                  }
+
+          let paneFound = false;
+          for (let attempt = 0; attempt < 15; attempt++) {
+              if (attempt === 5 && !paneFound) {
+                  // Force a re-click if Google Maps ignored the first virtual click
+                  try { await targetItem.evaluate(node => node.click()).catch(() => {}); } catch {}
+              }
+
+              const paneTitle = await page.locator('h1.DUwDvf').first().textContent().catch(() => "");
+              
+              if (paneTitle && paneTitle !== lastPaneTitle) {
+                  paneFound = true;
+                  lastPaneTitle = paneTitle;
                   break;
               }
+              
+              const paneLower = paneTitle.toLowerCase().trim();
+              const nameLower = name.toLowerCase().trim();
+              const nameAnchor = nameLower.split(/\s+/).slice(0, 3).join(' ');
+              if (attempt > 4 && paneLower.length > 2 && (nameLower.includes(paneLower) || paneLower.includes(nameLower) || paneLower.includes(nameAnchor))) {
+                  paneFound = true;
+                  lastPaneTitle = paneTitle;
+                  break;
+              }
+              
+              await page.waitForTimeout(400);
+          }
+          if (!paneFound) {
+              log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
+              continue;
           }
 
-          // RATING
-          const ratingText = await scope
-            .locator('[aria-label*="stars"]')
-            .first()
-            .getAttribute("aria-label", { timeout: 1500 })
-            .catch(() => "");
+          const phone = await page.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
+          const website = await page.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
+          const address = await page.locator('button[data-item-id="address"]').first().textContent({ timeout: 500 }).catch(() => "");
 
-          // REVIEWS
-          const reviewsText = await scope
-            .locator('[aria-label*="reviews"]')
-            .first()
-            .getAttribute("aria-label", { timeout: 1500 })
-            .catch(() => "");
+          let rating = '';
+          let reviews = '';
+          try {
+            const sidePane = page.locator(`div[role="main"][aria-label="${name.replace(/"/g, '\\"')}"]`).first();
+            const ratingBtnLabel = await sidePane
+              .locator('button[aria-label*="star"]')
+              .first()
+              .getAttribute('aria-label', { timeout: 500 })
+              .catch(() => '');
 
-          // =========================
-          // CLEAN PARSE (ROBUST)
-          // =========================
+            if (ratingBtnLabel) {
+              const rMatch = ratingBtnLabel.match(/([\d.]+)\s*star/i);
+              const vMatch = ratingBtnLabel.match(/([\d,]+)\s*(?:rating|review)/i);
+              if (rMatch) rating  = rMatch[1];
+              if (vMatch) reviews = vMatch[1].replace(/,/g, '');
+            }
 
-          const rating = ratingText ? ratingText.match(/(\d+\.?\d*)/)?.[1] || "" : "";
-          const reviews = reviewsText ? reviewsText.match(/(\d{1,3}(?:,\d{3})*)/)?.[1]?.replace(/,/g, "") || "" : "";
+            if (!rating) {
+              rating  = (await sidePane.locator('span.MW4etd').first().textContent({ timeout: 500 }).catch(() => '')).trim();
+              reviews = (await sidePane.locator('span.UY7F9').first().textContent({ timeout: 500 }).catch(() => '')).replace(/[^\d]/g, '');
+            }
+          } catch { /* rating is optional, never crash */ }
 
-          const key = `${name}|${phone}|${website}`.toLowerCase();
-          if (processedLeads.has(key)) continue;
-          processedLeads.add(key);
-
-          if (
-            leads.some(
-              (l) =>
-                `${l.business_name}|${l.phone}|${l.website}`.toLowerCase() ===
-                key,
-            )
-          )
-            continue;
-
-          log(`Processing: ${name}`);
-          log(`Website: ${website || "none"}`);
-
-          // =========================
-          // WEBSITE-SPECIFIC EXTRACTIONS (Emails + Owner)
-          // =========================
-          let primary_email = "";
-          let secondary_emails = [];
-          let owner_name = "";
-
-          if (website) {
-              const siteData = await extractWebsiteData(context, website);
-              primary_email = siteData.primary;
-              secondary_emails = siteData.secondary;
-              owner_name = siteData.owner;
-              log(`Emails found: ${siteData.primary ? 1 + siteData.secondary.length : 0}`);
+          if (!phone && !website) {
+              log(`⏭️ Skipping ${name} (No Phone/Web)`, jobId);
+              continue;
           }
 
-          const intentData = scoreLead({
-            rating: rating,
-            reviews: reviews,
-            website: !!website,
-            email: !!primary_email,
-          });
+          if (website && website.includes('google.com')) {
+               log(`⏭️ Skipping Google Link for ${name}`, jobId);
+               continue;
+          }
 
-          leads.push({
+          const lead = {
             business_name: name.trim(),
-            phone: phone || "",
+            phone: cleanPhone(phone),
             website: website || "",
-            primary_email: primary_email,
-            secondary_emails: secondary_emails.join("; "),
-            rating: rating,
-            reviews: reviews,
-            owner_name: owner_name || "",
-            owner_role: owner_name ? "Owner" : "",
-            city: subLocation.toString(),
-            intent: intentData.intent_tag,
-            score: intentData.score,
-            website_quality: website ? (primary_email ? "good" : "basic") : "none"
-          });
+            address: address.trim(),
+            rating: rating || "",
+            reviews: reviews || "0",
+            city: subLoc,
+            primary_email: "",
+            owner_name: "",
+            intent: "LOW"
+          };
 
-          const progress = (index / totalLocations) * 100 + (i / total) * (100 / totalLocations);
+          if (lead.website) {
+            const workerTask = async (data) => {
+              let ownerName = data.owner;
+              if (!ownerName) {
+                ownerName = await extractDecisionMaker(lead.website).catch(() => '');
+              }
 
-          onProgress({
-            progress: Math.min(99, Math.floor(progress)),
-            city: subLocation.toString(),
-            leads,
-          });
+              if (data.primary || ownerName) {
+                const enriched = {
+                  ...lead,
+                  primary_email: data.primary || lead.primary_email,
+                  owner_name: ownerName || lead.owner_name,
+                };
+                const score = (enriched.website ? 1 : 0) + (enriched.primary_email ? 2 : 0) + (enriched.owner_name ? 1 : 0);
+                enriched.intent = score >= 3 ? "HIGH" : score >= 1 ? "MEDIUM" : "LOW";
+                
+                if (data.primary) log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
+                
+                updateJob(jobId, { enrichLead: enriched });
+              }
+            };
+            
+            if (mode === 'normal') {
+              await workerPool.run(lead.website, workerTask);
+            } else {
+              workerPool.run(lead.website, workerTask);
+            }
+          }
 
-        } catch (err) {
-          log(`❌ ${err.message}`);
-        }
+          allLeads.push(lead);
+          updateJob(jobId, { leads: [lead] });
+          
+          // End of finding details
+          const progress = Math.min(99, Math.floor(((sIdx * 100 + totalFoundInCity) / (subLocations.length * 100)) * 100));
+          onProgress({ progress, city: subLoc });
 
-        await randomDelay(200, 400);
+        } catch (err) { log(`❌ Error: ${err.message}`, jobId); }
       }
-
+      
+      // Scroll to load the next batch
+      if (getJob(jobId)?.stopFlag) break;
+      if (foundNewInBatch) noNewCount = 0;
+      else noNewCount++;
+      
+      const feedLocatorNode = page.locator('div[role="feed"]');
+      if (await feedLocatorNode.count() > 0) {
+          await feedLocatorNode.evaluate(el => el.scrollTop = el.scrollHeight).catch(() => {});
+      }
+      await page.waitForTimeout(1000);
+    }
+    } finally {
       await page.close();
     }
+  };
 
-    return leads;
+  if (mode === 'parallel') {
+      const concurrency = Math.max(1, Math.min(parseInt(workerCount), 5));
+      let currentIdx = job.lastProcessedIndex || 0;
+      const tasks = Array.from({ length: concurrency }, async () => {
+          while (currentIdx < subLocations.length && !getJob(jobId)?.stopFlag) {
+              const idx = currentIdx++;
+              await processSubLocation(subLocations[idx], idx);
+          }
+      });
+      await Promise.all(tasks);
+  } else {
+      const startIdx = job.lastProcessedIndex || 0;
+      for (let sIdx = startIdx; sIdx < subLocations.length; sIdx++) {
+         if (getJob(jobId)?.stopFlag) break;
+         await processSubLocation(subLocations[sIdx], sIdx);
+      }
   }
 
-  // =========================
-  // LOCATION
-  // =========================
-  let subLocations = await getSubLocations(location);
-
-  log(`🌍 Total Sub-Locations (ZIPs/Cities): ${subLocations.length}`);
-
-  for (let i = 0; i < subLocations.length; i++) {
-    if (getJob(jobId)?.stopFlag) break;
-
-    const locLeads = await scrapeSubLocation(subLocations[i], i, subLocations.length);
-    allLeads = allLeads.concat(locLeads);
-  }
-
-  // FILTER
-  const filtered = allLeads.filter((l) => {
-    if (filterType === "with_website") return !!l.website;
-    if (filterType === "without_website") return !l.website;
-    return true;
-  });
-
-  // GLOBAL DEDUP
-  const seen = new Set();
-  const finalLeads = filtered.filter((l) => {
-    const key = `${l.business_name}|${l.phone}|${l.website}`.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  if (!finalLeads.length) {
-    log("⚠️ No leads found — possible Google block");
-  }
-
-  log(`🎯 FINAL: ${finalLeads.length}`);
-
+  log(`✅ Scan Finished. Total: ${allLeads.length}`, jobId);
   onProgress(100);
-
   await browser.close();
-  return finalLeads;
+  return allLeads;
+}
+
+// =========================
+// CSV ENRICHMENT ENGINE
+// =========================
+export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = () => {}) {
+  const job = getJob(jobId);
+  if (!job) return [];
+  
+  log(`🚀 Starting Email Enrichment for ${leads.length} leads...`, jobId);
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const workerPool = new WebsiteWorkerPool(context, parseInt(workerCount));
+  
+  let completed = 0;
+  
+  const batchSize = 100;
+  
+  await processInBatches(leads, batchSize, async (lead) => {
+     if (!lead.website || getJob(jobId)?.stopFlag) {
+        completed++;
+        return;
+     }
+
+     return workerPool.run(lead.website, async (data) => {
+        if (getJob(jobId)?.stopFlag) return;
+        
+        let ownerName = data.owner;
+        if (!ownerName) {
+           ownerName = await extractDecisionMaker(lead.website).catch(() => '');
+        }
+        
+        const enriched = {
+           ...lead,
+           primary_email: data.primary || lead.primary_email,
+           owner_name: ownerName || lead.owner_name,
+        };
+        const score = (enriched.website ? 1 : 0) + (enriched.primary_email ? 2 : 0) + (enriched.owner_name ? 1 : 0);
+        enriched.intent = score >= 3 ? "HIGH" : score >= 1 ? "MEDIUM" : "LOW";
+        
+        if (data.primary) log(`📧 Found Email for ${lead.business_name}: ${data.primary}`, jobId);
+        
+        updateJob(jobId, { enrichLead: enriched });
+        
+        completed++;
+        onProgress({ progress: Math.floor((completed / leads.length) * 100), city: "Enriching Websites" });
+     });
+  });
+  
+  log(`✅ Enrichment Complete. Processed: ${completed}`, jobId);
+  
+  if (!getJob(jobId)?.stopFlag) {
+    onProgress(100);
+  }
+  
+  await browser.close();
+  return leads;
 }
