@@ -3,6 +3,8 @@ import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
 import { extractDecisionMaker } from "./decisionMaker.js";
+import { scoreLead } from "./intentScorer.js";
+import { verifyEmail } from "./verifier.js";
 
 // Normalize phone numbers — strip everything except digits and leading +
 function cleanPhone(phone) {
@@ -171,6 +173,15 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
     if (getJob(jobId)?.stopFlag) return;
     const page = await context.newPage();
     
+    // =========================
+    // RAM SAVER: Block images natively on Google Maps
+    // =========================
+    await page.route('**/*', (route) => {
+        const type = route.request().resourceType();
+        if (['image', 'media'].includes(type)) return route.abort();
+        return route.continue();
+    });
+    
     try {
       const query = `${niche} in ${subLoc}`;
       log(`🚀 Searching: ${query}`, jobId);
@@ -243,22 +254,33 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
                       }
                   }
 
-                  try { await targetItem.scrollIntoViewIfNeeded(); } catch {}
+                  try { 
+                      await targetItem.scrollIntoViewIfNeeded(); 
+                      // FIX: Wait for Google Maps smooth-scroll animation to settle before clicking
+                      // 'Clicking too early' hits the wrong coordinates while the list is moving
+                      await page.waitForTimeout(600); 
+                  } catch {}
                   
                   try {
-                     await targetItem.click({ force: true, timeout: 3000 });
+                     await targetItem.click({ timeout: 1500 });
                   } catch {
-                     await targetItem.evaluate(node => node.click()).catch(() => {});
+                     // FIX: If invisible overlays block the mouse click, keyboard Enter bypasses layers entirely
+                     try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
                   }
 
           let paneFound = false;
           for (let attempt = 0; attempt < 15; attempt++) {
               if (attempt === 5 && !paneFound) {
-                  // Force a re-click if Google Maps ignored the first virtual click
-                  try { await targetItem.evaluate(node => node.click()).catch(() => {}); } catch {}
+                  // Force a fast fallback click if Google Maps ignored it
+                  try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
 
-              const paneTitle = await page.locator('h1.DUwDvf').first().textContent().catch(() => "");
+              // Instant DOM evaluation: Bypasses Playwright's 30-second implicit wait which was freezing the engine
+              const paneTitle = await page.evaluate(() => {
+                  const h1s = Array.from(document.querySelectorAll('h1.DUwDvf, h1.fontHeadlineLarge'));
+                  const visible = h1s.find(el => el.offsetParent !== null);
+                  return visible ? visible.innerText.trim() : "";
+              }).catch(() => "");
               
               if (paneTitle && paneTitle !== lastPaneTitle) {
                   paneFound = true;
@@ -281,6 +303,10 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
               log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
               continue;
           }
+          
+          // CRITICAL FIX: Give React/Angular DOM time to finish rendering new text inside the pane
+          // Without this, we grab the *previous* company's website and rating before it visually updates
+          await page.waitForTimeout(1000);
 
           const phone = await page.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
           const website = await page.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
@@ -319,7 +345,10 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
                continue;
           }
 
-          const lead = {
+          if (filterType === 'with_website' && !website) continue;
+          if (filterType === 'without_website' && website) continue;
+
+          let lead = {
             business_name: name.trim(),
             phone: cleanPhone(phone),
             website: website || "",
@@ -329,8 +358,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
             city: subLoc,
             primary_email: "",
             owner_name: "",
-            intent: "LOW"
+            intent: "LOW",
+            score: 0
           };
+
+          const initialScore = scoreLead(lead);
+          lead.intent = initialScore.intent_tag;
+          lead.score = initialScore.score;
 
           if (lead.website) {
             const workerTask = async (data) => {
@@ -340,15 +374,28 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
               }
 
               if (data.primary || ownerName) {
+                let validatedEmail = data.primary || lead.primary_email;
+                if (validatedEmail && !validatedEmail.includes('[')) {
+                    const status = await verifyEmail(validatedEmail);
+                    if (status !== 'not_found') {
+                       validatedEmail = `${validatedEmail} [${status}]`;
+                    } else {
+                       validatedEmail = `[INVALID] ${validatedEmail}`;
+                    }
+                }
+
                 const enriched = {
                   ...lead,
-                  primary_email: data.primary || lead.primary_email,
+                  primary_email: validatedEmail,
                   owner_name: ownerName || lead.owner_name,
                 };
-                const score = (enriched.website ? 1 : 0) + (enriched.primary_email ? 2 : 0) + (enriched.owner_name ? 1 : 0);
-                enriched.intent = score >= 3 ? "HIGH" : score >= 1 ? "MEDIUM" : "LOW";
+                
+                const scoreResult = scoreLead(enriched);
+                enriched.intent = scoreResult.intent_tag;
+                enriched.score = scoreResult.score;
                 
                 if (data.primary) log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
+                if (ownerName) log(`👤 Owner mapped: ${ownerName}`, jobId);
                 
                 updateJob(jobId, { enrichLead: enriched });
               }
@@ -442,15 +489,28 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = 
            ownerName = await extractDecisionMaker(lead.website).catch(() => '');
         }
         
+        let validatedEmail = data.primary || lead.primary_email;
+        if (validatedEmail && !validatedEmail.includes('[')) {
+            const status = await verifyEmail(validatedEmail);
+            if (status !== 'not_found') {
+               validatedEmail = `${validatedEmail} [${status}]`;
+            } else {
+               validatedEmail = `[INVALID] ${validatedEmail}`;
+            }
+        }
+
         const enriched = {
            ...lead,
-           primary_email: data.primary || lead.primary_email,
+           primary_email: validatedEmail,
            owner_name: ownerName || lead.owner_name,
         };
-        const score = (enriched.website ? 1 : 0) + (enriched.primary_email ? 2 : 0) + (enriched.owner_name ? 1 : 0);
-        enriched.intent = score >= 3 ? "HIGH" : score >= 1 ? "MEDIUM" : "LOW";
+        
+        const scoreResult = scoreLead(enriched);
+        enriched.intent = scoreResult.intent_tag;
+        enriched.score = scoreResult.score;
         
         if (data.primary) log(`📧 Found Email for ${lead.business_name}: ${data.primary}`, jobId);
+        if (ownerName) log(`👤 Owner mapped: ${ownerName}`, jobId);
         
         updateJob(jobId, { enrichLead: enriched });
         
