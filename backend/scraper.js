@@ -1,4 +1,7 @@
-import { chromium } from "playwright";
+import { chromium } from "playwright-extra";
+import stealthPlugin from "puppeteer-extra-plugin-stealth";
+chromium.use(stealthPlugin());
+
 import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
