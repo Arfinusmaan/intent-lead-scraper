@@ -15,6 +15,7 @@
     "csv-parser": "^3.2.0",
     "csv-writer": "^1.6.0",
     "dotenv": "^16.4.5",
+    "duck-duck-scrape": "^2.2.7",
     "express": "^4.21.1",
     "multer": "^2.1.1",
     "nanoid": "^4.0.0",
