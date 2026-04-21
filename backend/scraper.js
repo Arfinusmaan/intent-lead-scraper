@@ -2,7 +2,7 @@ import { chromium } from "playwright";
 import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
-import { extractDecisionMaker, extractMedicalDecisionMaker } from "./decisionMaker.js";
+import { extractDecisionMaker } from "./decisionMaker.js";
 import { scoreLead } from "./intentScorer.js";
 import { verifyEmail } from "./verifier.js";
 
@@ -156,7 +156,7 @@ async function checkPause(jobId) {
     }
 }
 
-export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode = 'hybrid', workerCount = 3, decisionMakerOnly = false, onProgress = () => {}) {
+export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode = 'hybrid', workerCount = 3, onProgress = () => {}) {
   const job = getJob(jobId);
   if (!job) return [];
 
@@ -369,16 +369,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
           if (lead.website) {
             const workerTask = async (data) => {
               let ownerName = data.owner;
-              
-              if (decisionMakerOnly) {
-                  const osint = await extractMedicalDecisionMaker(lead.business_name, lead.website);
-                  ownerName = osint.ownerName || ownerName;
-                  if (osint.email) {
-                      data.primary = osint.email;
-                  } else if (!data.primary && osint.fallbackEmail) {
-                      data.primary = osint.fallbackEmail;
-                  }
-              } else if (!ownerName) {
+              if (!ownerName) {
                 ownerName = await extractDecisionMaker(lead.website).catch(() => '');
               }
 
@@ -470,7 +461,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 // =========================
 // CSV ENRICHMENT ENGINE
 // =========================
-export async function enrichCSVList(leads, jobId, workerCount = 3, decisionMakerOnly = false, onProgress = () => {}) {
+export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = () => {}) {
   const job = getJob(jobId);
   if (!job) return [];
   
@@ -494,16 +485,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, decisionMaker
         if (getJob(jobId)?.stopFlag) return;
         
         let ownerName = data.owner;
-
-        if (decisionMakerOnly) {
-            const osint = await extractMedicalDecisionMaker(lead.business_name, lead.website);
-            ownerName = osint.ownerName || ownerName;
-            if (osint.email) {
-                data.primary = osint.email;
-            } else if (!data.primary && osint.fallbackEmail) {
-                data.primary = osint.fallbackEmail;
-            }
-        } else if (!ownerName) {
+        if (!ownerName) {
            ownerName = await extractDecisionMaker(lead.website).catch(() => '');
         }
         

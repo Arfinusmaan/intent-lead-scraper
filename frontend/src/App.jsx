@@ -17,7 +17,6 @@ export default function App() {
   const [mode, setMode] = useState("hybrid");
   const [workers, setWorkers] = useState(3);
   const [uploadLoading, setUploadLoading] = useState(false);
-  const [decisionMakerOnly, setDecisionMakerOnly] = useState(false);
   
   const [history, setHistory] = useState([]);
 
@@ -34,7 +33,7 @@ export default function App() {
       const res = await fetch("http://localhost:3001/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ niche, location, filterType, mode, workers, decisionMakerOnly }),
+        body: JSON.stringify({ niche, location, filterType, mode, workers }),
       });
       const data = await res.json();
       setJobId(data.jobId);
@@ -53,7 +52,6 @@ export default function App() {
     formData.append("file", file);
     formData.append("mode", mode);
     formData.append("workers", workers);
-    formData.append("decisionMakerOnly", decisionMakerOnly);
 
     try {
       const res = await fetch("http://localhost:3001/upload-csv", {
@@ -300,20 +298,6 @@ export default function App() {
                         <input type="file" accept=".csv" className="hidden" onChange={uploadCSV} disabled={uploadLoading || loading} />
                     </label>
                   </div>
-                </div>
-
-                {/* Aura Features Row */}
-                <div className="flex flex-col gap-3 mt-3 relative z-10 w-full xl:w-2/3 mx-auto">
-                   <label className={`w-full h-14 flex items-center justify-center gap-3 rounded-xl border cursor-pointer transition-all ${decisionMakerOnly ? "bg-amber-500/10 border-amber-500/30 shadow-[0_0_20px_-5px_rgba(245,158,11,0.3)]" : "bg-white/5 border-white/10 hover:bg-white/10"}`}>
-                       <input type="checkbox" className="hidden" checked={decisionMakerOnly} onChange={(e) => setDecisionMakerOnly(e.target.checked)} disabled={loading || uploadLoading} />
-                       <div className={`w-5 h-5 rounded flex items-center justify-center border transition-all ${decisionMakerOnly ? "bg-amber-500 border-amber-500" : "bg-[#0a0a0a] border-slate-500"}`}>
-                          {decisionMakerOnly && <CheckCircle className="w-4 h-4 text-white" />}
-                       </div>
-                       <span className={`font-bold tracking-wide text-sm ${decisionMakerOnly ? "text-amber-400" : "text-slate-400"}`}>
-                          <User className="w-4 h-4 inline-block mr-1 opacity-80 mb-0.5" />
-                          Extract Verified Decision Makers (Multi-Layer OSINT)
-                       </span>
-                   </label>
                 </div>
               </div>
 

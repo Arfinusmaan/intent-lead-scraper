@@ -29,7 +29,6 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
 
   const mode = req.body.mode || 'hybrid';
   const workers = req.body.workers || 3;
-  const decisionMakerOnly = req.body.decisionMakerOnly === 'true' || req.body.decisionMakerOnly === true;
   const jobId = nanoid();
   const leads = [];
 
@@ -64,13 +63,12 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
          logs: [],
          currentCity: 'Parsing',
          createdAt: new Date(),
-         stopFlag: false,
-         decisionMakerOnly
+         stopFlag: false
        });
        
-       log(`🚀 Started: CSV Enrichment for ${leads.length} leads (DM Only: ${decisionMakerOnly})`, jobId);
+       log(`🚀 Started: CSV Enrichment for ${leads.length} leads`, jobId);
        
-       enrichCSVList(leads, jobId, workers, decisionMakerOnly, (progressData) => {
+       enrichCSVList(leads, jobId, workers, (progressData) => {
           const job = getJob(jobId);
           if (!job || job.stopFlag) return;
           if (typeof progressData === 'number') {
@@ -102,7 +100,7 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
 // START SCRAPE
 // =========================
 app.post('/scrape', async (req, res) => {
-  const { niche, location, filterType = 'all', mode = 'hybrid', workers = 3, decisionMakerOnly = false } = req.body;
+  const { niche, location, filterType = 'all', mode = 'hybrid', workers = 3 } = req.body;
 
   const jobId = nanoid();
 
@@ -116,11 +114,10 @@ app.post('/scrape', async (req, res) => {
     logs: [],
     currentCity: '',
     createdAt: new Date(),
-    stopFlag: false,
-    decisionMakerOnly
+    stopFlag: false
   });
 
-  log(`🚀 Started: ${niche} in ${location} (DM Only: ${decisionMakerOnly})`, jobId);
+  log(`🚀 Started: ${niche} in ${location}`, jobId);
 
   // ASYNC WORKER
   (async () => {
@@ -132,7 +129,6 @@ app.post('/scrape', async (req, res) => {
         jobId,
         mode,
         workers,
-        decisionMakerOnly,
         (progressData) => {
           const job = getJob(jobId);
           if (!job || job.stopFlag) return;
@@ -238,16 +234,12 @@ app.get('/csv/:id', (req, res) => {
     job.niche || ''
   ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
 
-  const verifiedDM = job.leads.filter(l => l.primary_email && l.owner_name && job.decisionMakerOnly);
-  const withEmail = job.leads.filter(l => l.primary_email && (!l.owner_name || !job.decisionMakerOnly));
+  const withEmail = job.leads.filter(l => l.primary_email);
   const withoutEmail = job.leads.filter(l => !l.primary_email);
 
   let csvContent = "";
-  if (verifiedDM.length > 0) {
-      csvContent += `"--- VERIFIED DECISION MAKERS ---"\n` + headers + verifiedDM.map(formatRow).join('\n') + '\n\n';
-  }
   if (withEmail.length > 0) {
-      csvContent += `"--- WITH GENERIC EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
+      csvContent += `"--- WITH EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
   }
   if (withoutEmail.length > 0) {
       csvContent += `"--- WITHOUT EMAIL ---"\n` + headers + withoutEmail.map(formatRow).join('\n') + '\n';
@@ -324,7 +316,6 @@ app.post('/resume/:id', (req, res) => {
             job.id,
             job.mode || 'hybrid',
             job.workers || 3,
-            job.decisionMakerOnly || false,
             (progressData) => {
               const currentJob = getJob(job.id);
               if (!currentJob || currentJob.stopFlag) return;
