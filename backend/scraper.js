@@ -169,6 +169,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
   let subLocations = await getSubLocations(location);
   let allLeads = [];
+  let workerPromises = [];
 
   const processSubLocation = async (subLoc, sIdx) => {
     updateJob(jobId, { lastProcessedIndex: sIdx });
@@ -259,16 +260,18 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
                   try { 
                       await targetItem.scrollIntoViewIfNeeded(); 
-                      // FIX: Wait for Google Maps smooth-scroll animation to settle before clicking
-                      // 'Clicking too early' hits the wrong coordinates while the list is moving
                       await page.waitForTimeout(600); 
                   } catch {}
                   
                   try {
                      await targetItem.click({ timeout: 1500 });
                   } catch {
-                     // FIX: If invisible overlays block the mouse click, keyboard Enter bypasses layers entirely
-                     try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
+                     try { 
+                         // Robust fallback click using JS to bypass any visible overlay
+                         await targetItem.evaluate(node => node.click()); 
+                     } catch {
+                         try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
+                     }
                   }
 
           let paneFound = false;
@@ -407,7 +410,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
             if (mode === 'normal') {
               await workerPool.run(lead.website, workerTask);
             } else {
-              workerPool.run(lead.website, workerTask);
+              workerPromises.push(workerPool.run(lead.website, workerTask));
             }
           }
 
@@ -430,8 +433,10 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
       if (await feedLocatorNode.count() > 0) {
           await feedLocatorNode.evaluate(el => el.scrollTop = el.scrollHeight).catch(() => {});
       }
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2000); // Wait longer for Maps to load new results
     }
+    } catch(err) {
+      log(`❌ Sub-location ${subLoc} error: ${err.message}`, jobId);
     } finally {
       await page.close();
     }
@@ -453,6 +458,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
          if (getJob(jobId)?.stopFlag) break;
          await processSubLocation(subLocations[sIdx], sIdx);
       }
+  }
+
+  if (workerPromises.length > 0) {
+      log(`⏳ Waiting for ${workerPromises.length} background email enrichment tasks to finish...`, jobId);
+      await Promise.allSettled(workerPromises);
   }
 
   log(`✅ Scan Finished. Total: ${allLeads.length}`, jobId);
