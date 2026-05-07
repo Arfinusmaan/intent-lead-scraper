@@ -8,6 +8,7 @@ export default function App() {
   const [niche, setNiche] = useState("");
   const [location, setLocation] = useState("");
   const [filterType, setFilterType] = useState("all");
+  const [negativeKeywords, setNegativeKeywords] = useState("");
   
   const [jobId, setJobId] = useState("");
   const [job, setJob] = useState(null);
@@ -33,7 +34,7 @@ export default function App() {
       const res = await fetch("http://localhost:3001/scrape", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ niche, location, filterType, mode, workers }),
+        body: JSON.stringify({ niche, location, filterType, mode, workers, negativeKeywords }),
       });
       const data = await res.json();
       setJobId(data.jobId);
@@ -52,6 +53,7 @@ export default function App() {
     formData.append("file", file);
     formData.append("mode", mode);
     formData.append("workers", workers);
+    formData.append("negativeKeywords", negativeKeywords);
 
     try {
       const res = await fetch("http://localhost:3001/upload-csv", {
@@ -265,6 +267,18 @@ export default function App() {
                 
                 {/* Mode, Workers, and CSV row */}
                 <div className="flex flex-col md:flex-row gap-3 mt-3 relative z-10">
+                  <div className="flex-1 relative">
+                    <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
+                    <input
+                      type="text"
+                      placeholder="Exclude keywords (e.g. massage, school)"
+                      value={negativeKeywords}
+                      onChange={(e) => setNegativeKeywords(e.target.value)}
+                      disabled={loading}
+                      className="w-full h-14 bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-rose-500/50 outline-none transition-all text-sm"
+                      title="Skip any leads whose name or category matches these words"
+                    />
+                  </div>
                   <div className="flex-1 relative">
                     <select
                       value={mode}

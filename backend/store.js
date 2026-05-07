@@ -18,8 +18,38 @@ function debouncedRewriteCSV(id, leads, niche) {
   csvDebounceTimers.set(id, timer);
 }
 
+const appendBuffers = new Map();
+
 function appendToCSV(id, newLeads, niche) {
   if (newLeads.length === 0) return;
+  
+  if (!appendBuffers.has(id)) {
+      appendBuffers.set(id, { leads: [], timer: null });
+  }
+  
+  const buffer = appendBuffers.get(id);
+  buffer.leads.push(...newLeads);
+  
+  // Flush if buffer is large, or set a timer to flush when idle
+  if (buffer.leads.length >= 50) {
+      flushAppendBuffer(id, niche);
+  } else if (!buffer.timer) {
+      buffer.timer = setTimeout(() => flushAppendBuffer(id, niche), 1000);
+  }
+}
+
+function flushAppendBuffer(id, niche) {
+  const buffer = appendBuffers.get(id);
+  if (!buffer || buffer.leads.length === 0) return;
+  
+  if (buffer.timer) {
+      clearTimeout(buffer.timer);
+      buffer.timer = null;
+  }
+  
+  const leadsToFlush = [...buffer.leads];
+  buffer.leads = [];
+  
   const dir = path.join(process.cwd(), 'exports');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   
@@ -30,7 +60,7 @@ function appendToCSV(id, newLeads, niche) {
     fs.writeFileSync(file, headers);
   }
   
-  const rows = newLeads.map(l => [
+  const rows = leadsToFlush.map(l => [
     l.business_name || '',
     l.phone || '',
     l.website || '',
@@ -195,12 +225,17 @@ export function updateJob(id, updates = {}) {
       l.business_name.trim().toLowerCase() === key
     );
     if (idx !== -1) {
-      if (enriched.primary_email)    job.leads[idx].primary_email    = enriched.primary_email;
-      if (enriched.owner_name)       job.leads[idx].owner_name       = enriched.owner_name;
-      if (enriched.intent)           job.leads[idx].intent           = enriched.intent;
+      if (enriched.isRejected) {
+        job.leads.splice(idx, 1);
+        debouncedRewriteCSV(id, job.leads, job.niche);
+      } else {
+        if (enriched.primary_email)    job.leads[idx].primary_email    = enriched.primary_email;
+        if (enriched.owner_name)       job.leads[idx].owner_name       = enriched.owner_name;
+        if (enriched.intent)           job.leads[idx].intent           = enriched.intent;
 
-      // Debounced rewrite — waits 500ms after last enrichment before hitting disk
-      debouncedRewriteCSV(id, job.leads, job.niche);
+        // Debounced rewrite — waits 500ms after last enrichment before hitting disk
+        debouncedRewriteCSV(id, job.leads, job.niche);
+      }
     }
     delete updates.enrichLead;
   }

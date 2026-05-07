@@ -29,6 +29,7 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
 
   const mode = req.body.mode || 'hybrid';
   const workers = req.body.workers || 3;
+  const negativeKeywords = req.body.negativeKeywords || '';
   const jobId = nanoid();
   const leads = [];
 
@@ -57,6 +58,7 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
          niche: 'CSV Upload',
          location: 'Multiple',
          filterType: 'all',
+         negativeKeywords,
          status: 'running',
          progress: 0,
          leads: leads,
@@ -68,7 +70,7 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
        
        log(`🚀 Started: CSV Enrichment for ${leads.length} leads`, jobId);
        
-       enrichCSVList(leads, jobId, workers, (progressData) => {
+       enrichCSVList(leads, jobId, workers, negativeKeywords, (progressData) => {
           const job = getJob(jobId);
           if (!job || job.stopFlag) return;
           if (typeof progressData === 'number') {
@@ -100,7 +102,7 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
 // START SCRAPE
 // =========================
 app.post('/scrape', async (req, res) => {
-  const { niche, location, filterType = 'all', mode = 'hybrid', workers = 3 } = req.body;
+  const { niche, location, filterType = 'all', mode = 'hybrid', workers = 3, negativeKeywords = '' } = req.body;
 
   const jobId = nanoid();
 
@@ -108,6 +110,7 @@ app.post('/scrape', async (req, res) => {
     niche,
     location,
     filterType,
+    negativeKeywords,
     status: 'running',
     progress: 0,
     leads: [],
@@ -126,6 +129,7 @@ app.post('/scrape', async (req, res) => {
         niche,
         location,
         filterType,
+        negativeKeywords,
         jobId,
         mode,
         workers,
@@ -313,6 +317,7 @@ app.post('/resume/:id', (req, res) => {
             job.niche,
             job.location,
             job.filterType,
+            job.negativeKeywords || '',
             job.id,
             job.mode || 'hybrid',
             job.workers || 3,

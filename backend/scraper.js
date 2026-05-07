@@ -26,27 +26,27 @@ class WebsiteWorkerPool {
     this.queue = [];
   }
 
-  async run(website, callback) {
+  async run(website, callback, negWords = []) {
     if (this.activeWorkers >= this.maxWorkers) {
       return new Promise((resolve) => {
-        this.queue.push({ website, callback, resolve });
+        this.queue.push({ website, callback, negWords, resolve });
       });
     }
 
     this.activeWorkers++;
     try {
-      const result = await this.extract(website);
+      const result = await this.extract(website, negWords);
       await callback(result); // await — callback is async (calls extractDecisionMaker)
     } finally {
       this.activeWorkers--;
       if (this.queue.length > 0) {
         const next = this.queue.shift();
-        this.run(next.website, next.callback).then(next.resolve);
+        this.run(next.website, next.callback, next.negWords).then(next.resolve);
       }
     }
   }
 
-  async extract(website) {
+  async extract(website, negWords = []) {
     if (!website) return { primary: "", secondary: [], owner: "" };
     
     let emails = [];
@@ -94,6 +94,21 @@ class WebsiteWorkerPool {
       
       const html = await homePage.content();
       const text = await homePage.evaluate(() => document.body?.innerText || '');
+      
+      let isRejected = false;
+      if (negWords && negWords.length > 0) {
+          const lowerText = text.toLowerCase();
+          for (const nw of negWords) {
+              if (lowerText.includes(nw)) {
+                  isRejected = true;
+                  break;
+              }
+          }
+      }
+      if (isRejected) {
+          return { primary: "", secondary: [], owner: "", isRejected: true };
+      }
+
       extractOwner(text);
       
       const found = [...html.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
@@ -159,7 +174,7 @@ async function checkPause(jobId) {
     }
 }
 
-export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode = 'hybrid', workerCount = 3, onProgress = () => {}) {
+export async function scrapeGoogleMaps(niche, location, filterType, negativeKeywords, jobId, mode = 'hybrid', workerCount = 3, onProgress = () => {}) {
   const job = getJob(jobId);
   if (!job) return [];
 
@@ -169,7 +184,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
   let subLocations = await getSubLocations(location);
   let allLeads = [];
-  let workerPromises = [];
+  let workerPromises = new Set();
 
   const processSubLocation = async (subLoc, sIdx) => {
     updateJob(jobId, { lastProcessedIndex: sIdx });
@@ -240,6 +255,38 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
               } catch { continue; }
               
               if (!name || processedNames.has(name)) continue;
+
+              const lowerName = name.toLowerCase();
+              const lowerNiche = niche.toLowerCase();
+              
+              // Process Negative Keywords
+              const negWords = (negativeKeywords || '')
+                  .toLowerCase()
+                  .split(',')
+                  .map(w => w.trim())
+                  .filter(w => w.length > 0);
+
+              let hasNegative = false;
+              for (const nw of negWords) {
+                  if (lowerName.includes(nw)) {
+                      hasNegative = true;
+                      break;
+                  }
+              }
+
+              if (hasNegative) {
+                  log(`⏭️ Skipping ${name} (Negative keyword match in name)`, jobId);
+                  continue;
+              }
+              
+              // Built-in heuristics for pure Massage Spas if looking for Med Spas
+              if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa')) {
+                  if (lowerName.includes('massage') && !lowerName.match(/med|medical|aesthetic|laser|clinic|beauty/)) {
+                      log(`⏭️ Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
+                      continue;
+                  }
+              }
+
               processedNames.add(name);
               foundNewInBatch = true;
               totalFoundInCity++;
@@ -260,7 +307,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
                   try { 
                       await targetItem.scrollIntoViewIfNeeded(); 
-                      await page.waitForTimeout(600); 
+                      await page.waitForTimeout(100); 
                   } catch {}
                   
                   try {
@@ -275,7 +322,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
                   }
 
           let paneFound = false;
-          for (let attempt = 0; attempt < 15; attempt++) {
+          for (let attempt = 0; attempt < 25; attempt++) {
               if (attempt === 5 && !paneFound) {
                   // Force a fast fallback click if Google Maps ignored it
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
@@ -303,7 +350,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
                   break;
               }
               
-              await page.waitForTimeout(400);
+              await page.waitForTimeout(200);
           }
           if (!paneFound) {
               log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
@@ -312,7 +359,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
           
           // CRITICAL FIX: Give React/Angular DOM time to finish rendering new text inside the pane
           // Without this, we grab the *previous* company's website and rating before it visually updates
-          await page.waitForTimeout(1000);
+          await page.waitForTimeout(350); // Reduced from 1000ms for flash fast speed
 
           const phone = await page.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
           const website = await page.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
@@ -320,8 +367,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
           let rating = '';
           let reviews = '';
+          let sidePaneText = '';
           try {
             const sidePane = page.locator(`div[role="main"][aria-label="${name.replace(/"/g, '\\"')}"]`).first();
+            
+            // Fast text extraction to check categories and description
+            sidePaneText = await sidePane.textContent({ timeout: 500 }).catch(() => "");
+            
             const ratingBtnLabel = await sidePane
               .locator('button[aria-label*="star"]')
               .first()
@@ -351,6 +403,25 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
                continue;
           }
 
+          // Check Negative Keywords inside the side pane (catches categories like "Massage therapist")
+          if (sidePaneText) {
+              const lowerPaneText = sidePaneText.toLowerCase();
+              let hasNegativePane = false;
+              for (const nw of negWords) {
+                  // We require the negative word to be a standalone word or phrase in the text to avoid aggressive partial matching,
+                  // but a simple .includes() is usually fine.
+                  if (lowerPaneText.includes(nw)) {
+                      hasNegativePane = true;
+                      break;
+                  }
+              }
+              
+              if (hasNegativePane) {
+                  log(`⏭️ Skipping ${name} (Negative keyword found in business category/details)`, jobId);
+                  continue;
+              }
+          }
+
           if (filterType === 'with_website' && !website) continue;
           if (filterType === 'without_website' && website) continue;
 
@@ -374,6 +445,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 
           if (lead.website) {
             const workerTask = async (data) => {
+              if (data.isRejected) {
+                 log(`🚫 Purging ${name} (Negative keyword found on their website!)`, jobId);
+                 updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
+                 return;
+              }
+
               let ownerName = data.owner;
               if (!ownerName) {
                 ownerName = await extractDecisionMaker(lead.website).catch(() => '');
@@ -408,9 +485,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
             };
             
             if (mode === 'normal') {
-              await workerPool.run(lead.website, workerTask);
+              await workerPool.run(lead.website, workerTask, negWords);
             } else {
-              workerPromises.push(workerPool.run(lead.website, workerTask));
+              const p = workerPool.run(lead.website, workerTask, negWords);
+              workerPromises.add(p);
+              p.finally(() => workerPromises.delete(p));
             }
           }
 
@@ -431,9 +510,20 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
       
       const feedLocatorNode = page.locator('div[role="feed"]');
       if (await feedLocatorNode.count() > 0) {
+          const beforeScrollCount = await listings.count();
           await feedLocatorNode.evaluate(el => el.scrollTop = el.scrollHeight).catch(() => {});
+          
+          // Flash Fast Dynamic Wait instead of rigid 2000ms
+          let waited = 0;
+          while (waited < 4000) { // Max 4s wait for slow connections
+             await page.waitForTimeout(300);
+             waited += 300;
+             const afterCount = await listings.count();
+             if (afterCount > beforeScrollCount) break; // Found new items quickly!
+          }
+      } else {
+          await page.waitForTimeout(1000);
       }
-      await page.waitForTimeout(2000); // Wait longer for Maps to load new results
     }
     } catch(err) {
       log(`❌ Sub-location ${subLoc} error: ${err.message}`, jobId);
@@ -443,7 +533,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
   };
 
   if (mode === 'parallel') {
-      const concurrency = Math.max(1, Math.min(parseInt(workerCount), 5));
+      // Memory Optimization: Hard cap Maps page concurrency to 2 on 8GB RAM systems.
+      // Background web workers can still use `workerCount`.
+      const concurrency = Math.max(1, Math.min(parseInt(workerCount), 2));
       let currentIdx = job.lastProcessedIndex || 0;
       const tasks = Array.from({ length: concurrency }, async () => {
           while (currentIdx < subLocations.length && !getJob(jobId)?.stopFlag) {
@@ -460,9 +552,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
       }
   }
 
-  if (workerPromises.length > 0) {
-      log(`⏳ Waiting for ${workerPromises.length} background email enrichment tasks to finish...`, jobId);
-      await Promise.allSettled(workerPromises);
+  if (workerPromises.size > 0) {
+      log(`⏳ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
+      await Promise.allSettled(Array.from(workerPromises));
   }
 
   log(`✅ Scan Finished. Total: ${allLeads.length}`, jobId);
@@ -474,7 +566,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, jobId, mode 
 // =========================
 // CSV ENRICHMENT ENGINE
 // =========================
-export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = () => {}) {
+export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywords = '', onProgress = () => {}) {
   const job = getJob(jobId);
   if (!job) return [];
   
@@ -484,6 +576,12 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = 
   const context = await browser.newContext();
   const workerPool = new WebsiteWorkerPool(context, parseInt(workerCount));
   
+  const negWords = (negativeKeywords || '')
+      .toLowerCase()
+      .split(',')
+      .map(w => w.trim())
+      .filter(w => w.length > 0);
+
   let completed = 0;
   
   const batchSize = 100;
@@ -497,6 +595,13 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = 
      return workerPool.run(lead.website, async (data) => {
         if (getJob(jobId)?.stopFlag) return;
         
+        if (data.isRejected) {
+           log(`🚫 Purging ${lead.business_name} (Negative keyword found on website)`, jobId);
+           updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
+           completed++;
+           return;
+        }
+
         let ownerName = data.owner;
         if (!ownerName) {
            ownerName = await extractDecisionMaker(lead.website).catch(() => '');
@@ -529,7 +634,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, onProgress = 
         
         completed++;
         onProgress({ progress: Math.floor((completed / leads.length) * 100), city: "Enriching Websites" });
-     });
+     }, negWords);
   });
   
   log(`✅ Enrichment Complete. Processed: ${completed}`, jobId);
