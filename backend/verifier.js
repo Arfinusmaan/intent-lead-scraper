@@ -41,6 +41,10 @@ export async function verifyEmail(email) {
     return status;
 
   } catch (err) {
+    if (['ENOTFOUND', 'ENODATA'].includes(err.code)) {
+      CACHE.set(email, 'not_found');
+      return 'not_found';
+    }
     return 'risky';
   }
 }
@@ -60,6 +64,7 @@ function trySmtp(email, mxHost, port) {
     const socket = new net.Socket();
     let step = 0;
     let finished = false;
+    let buffer = '';
 
     const cleanup = () => {
       if (!finished) {
@@ -74,23 +79,46 @@ function trySmtp(email, mxHost, port) {
     socket.connect(port, mxHost, () => {});
 
     socket.on('data', (data) => {
-      const response = data.toString();
-      const code = parseInt(response.slice(0, 3), 10);
+      buffer += data.toString();
+      while (buffer.includes('\r\n')) {
+        const lineIdx = buffer.indexOf('\r\n');
+        const line = buffer.slice(0, lineIdx);
+        buffer = buffer.slice(lineIdx + 2);
 
-      if (step === 0 && code === 220) {
-        step = 1;
-        socket.write('EHLO leadengine.com\r\n');
-      } else if (step === 1 && code === 250) {
-        step = 2;
-        socket.write('MAIL FROM:<test@leadengine.com>\r\n');
-      } else if (step === 2 && code === 250) {
-        step = 3;
-        socket.write(`RCPT TO:<${email}>\r\n`);
-      } else if (step === 3) {
-        finished = true;
-        socket.write('QUIT\r\n');
-        socket.destroy();
-        resolve(code);
+        const code = parseInt(line.slice(0, 3), 10);
+        const isMultiline = line.charAt(3) === '-';
+
+        if (step === 0) {
+          if (code === 220 && !isMultiline) {
+            step = 1;
+            socket.write('EHLO leadengine.com\r\n');
+          } else if (code >= 400) {
+            cleanup();
+            return;
+          }
+        } else if (step === 1) {
+          if (code === 250 && !isMultiline) {
+            step = 2;
+            socket.write('MAIL FROM:<test@leadengine.com>\r\n');
+          } else if (code >= 400) {
+            cleanup();
+            return;
+          }
+        } else if (step === 2) {
+          if (code === 250 && !isMultiline) {
+            step = 3;
+            socket.write(`RCPT TO:<${email}>\r\n`);
+          } else if (code >= 400) {
+            cleanup();
+            return;
+          }
+        } else if (step === 3) {
+          finished = true;
+          socket.write('QUIT\r\n');
+          socket.destroy();
+          resolve(code);
+          return;
+        }
       }
     });
 

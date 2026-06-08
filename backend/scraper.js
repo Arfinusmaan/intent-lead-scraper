@@ -5,13 +5,92 @@ chromium.use(stealthPlugin());
 import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
-import { extractDecisionMaker } from "./decisionMaker.js";
 import { scoreLead } from "./intentScorer.js";
 import { verifyEmail } from "./verifier.js";
+
+function isSharedPlatform(domain) {
+  if (!domain) return false;
+  const shared = [
+    'facebook.com', 'instagram.com', 'yelp.com', 'google.com', 'twitter.com', 
+    'linkedin.com', 'youtube.com', 'manta.com', 'yellowpages.com', 'foursquare.com',
+    'mapquest.com', 'tripadvisor.com', 'groupon.com', 'angis.com', 'homeadvisor.com'
+  ];
+  return shared.some(s => domain.includes(s));
+}
+
+function isNicheAligned(niche, businessName, category, sidePaneText) {
+  const cleanNiche = niche.toLowerCase().trim();
+  const cleanName = businessName.toLowerCase();
+  const cleanCategory = (category || '').toLowerCase();
+  const cleanText = (sidePaneText || '').toLowerCase();
+
+  // 1. Restoration
+  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
+    const autoKeywords = [
+      'car', 'auto', 'vehicle', 'furniture', 'book', 'art', 'watch', 'pen', 'antique', 
+      'cabinet', 'wood', 'leather', 'classic', 'engine', 'motor', 'cycle', 'collision', 
+      'paint', 'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
+    ];
+    if (autoKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+      return false;
+    }
+    const allowed = [
+      'water damage', 'fire damage', 'mold', 'remediation', 'restoration', 'cleanup', 
+      'disaster', 'flood', 'emergency', 'mitigation', 'carpet', 'dryer vent', 'contractor', 
+      'construction', 'builder', 'renovation', 'roofing', 'plumbing', 'damage'
+    ];
+    if (!allowed.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw) || cleanText.includes(kw))) {
+      return false;
+    }
+    return true;
+  }
+
+  // 2. Med Spa
+  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
+    const disallowed = [
+      'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology', 
+      'nail salon', 'hair salon', 'barber', 'chiropractor'
+    ];
+    if (disallowed.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
+      return false;
+    }
+    if (cleanCategory.includes('massage') || cleanName.includes('massage')) {
+      const medicalTerms = ['medical', 'med', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin'];
+      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // 3. Roofing
+  if (cleanNiche.includes('roofing') || cleanNiche.includes('roofer')) {
+    const disallowed = ['roof bar', 'restaurant', 'hotel', 'lounge', 'rooftop', 'roof top'];
+    if (disallowed.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+      return false;
+    }
+    return true;
+  }
+
+  // 4. General fallback
+  const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an']);
+  const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
+  
+  if (nicheWords.length > 0) {
+    const matched = nicheWords.some(w => cleanName.includes(w) || cleanCategory.includes(w) || cleanText.includes(w));
+    if (!matched) {
+      return false;
+    }
+  }
+
+  return true;
+}
 
 // Normalize phone numbers — strip everything except digits and leading +
 function cleanPhone(phone) {
   if (!phone) return '';
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 7 || digits.length > 15) return '';
   return phone.replace(/[^\d+\-()\s]/g, '').trim();
 }
 
@@ -47,29 +126,60 @@ class WebsiteWorkerPool {
   }
 
   async extract(website, negWords = []) {
-    if (!website) return { primary: "", secondary: [], owner: "" };
+    if (!website) return { primary: "", secondary: [] };
     
     let emails = [];
-    let owner = "";
     const cleanWeb = website.replace(/\/$/, '');
     
     const isValidEmail = (email) => {
-        const JUNK_DOMAINS = ['sentry.io', 'wix.com', 'google.com', 'example.com', 'domain.com', 'cloudflare.com', 'amazonaws.com'];
-        const JUNK_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.css', '.js'];
-        if (!email || email.includes('google.com')) return false;
-        if (JUNK_EXTENSIONS.some(ext => email.toLowerCase().endsWith(ext))) return false;
-        const domain = email.split('@')[1];
-        if (!domain) return false;
-        return !JUNK_DOMAINS.some(d => domain.includes(d));
+        if (!email || email.includes(' ') || !email.includes('@')) return false;
+        
+        const [user, domain] = email.toLowerCase().split('@');
+        if (!user || !domain) return false;
+        
+        // Block common test/template emails
+        const JUNK_USERS = ['email', 'user', 'username', 'name', 'yourname', 'test', 'example', 'domain', 'info@example.com'];
+        if (JUNK_USERS.includes(user)) return false;
+        
+        // Block common junk domains
+        const JUNK_DOMAINS = [
+          'sentry.io', 'wix.com', 'google.com', 'example.com', 'domain.com', 
+          'cloudflare.com', 'amazonaws.com', 'wordpress.org', 'squarespace.com', 
+          'shopify.com', 'weebly.com', 'godaddy.com', 'bluehost.com', 'hostgator.com',
+          'gravatar.com', 'schema.org', 'openoffice.org'
+        ];
+        if (JUNK_DOMAINS.some(d => domain.includes(d))) return false;
+
+        const JUNK_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.svg', '.mp4', '.css', '.js', '.pdf', '.gifv'];
+        if (JUNK_EXTENSIONS.some(ext => domain.endsWith(ext))) return false;
+
+        // Ensure domain has a dot and a valid TLD
+        const parts = domain.split('.');
+        if (parts.length < 2) return false;
+        const tld = parts[parts.length - 1];
+        if (!/^[a-z]{2,8}$/.test(tld)) return false;
+
+        // Check for gibberish/random strings (e.g. no vowels at all in a long string, or random hashes)
+        const hasVowels = /[aeiouy]/.test(user);
+        if (user.length > 12 && !hasVowels) return false;
+        
+        // Check if username is hex hash (e.g. 6a8ypcacevhcac)
+        if (user.length > 16 && /^[a-f0-9]+$/.test(user)) return false;
+        
+        // Check if username has a mix of numbers and letters scattered throughout (indicates hash/random ID)
+        if (user.length > 8 && /\d[a-z]|[a-z]\d/.test(user) && (user.match(/\d/g) || []).length > 1) {
+            if (!/^[a-z]+[0-9]+$/.test(user)) {
+                return false;
+            }
+        }
+
+        // Check for common placeholders
+        if (email.includes('placeholder') || email.includes('template')) return false;
+
+        return true;
     };
 
-    const extractOwner = (text) => {
-        if (owner) return;
-        const roles = "CEO|Owner|Founder|Director|President|Principal|Manager|Partner";
-        const res = text.match(new RegExp(`([A-Z][a-z]+(?:\\s[A-Z][a-z]+){1,2})\\s*(?:-|,|is the|:)?\\s*(${roles})`, "i")) || 
-                    text.match(new RegExp(`(${roles})\\s*(?:-|,|:)?\\s*([A-Z][a-z]+(?:\\s[A-Z][a-z]+){1,2})`, "i"));
-        if (res) owner = (res[1].length > res[2].length ? res[1] : res[2]).trim();
-    };
+
 
     // =========================
     // RAM SAVER: Block images & media, allow fonts & CSS
@@ -106,12 +216,10 @@ class WebsiteWorkerPool {
           }
       }
       if (isRejected) {
-          return { primary: "", secondary: [], owner: "", isRejected: true };
+          return { primary: "", secondary: [], isRejected: true };
       }
-
-      extractOwner(text);
       
-      const found = [...html.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
+      const found = [...text.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)]
         .map(m => m[0].toLowerCase())
         .filter(isValidEmail);
       emails.push(...found);
@@ -146,10 +254,9 @@ class WebsiteWorkerPool {
             await blockRoute(p);
             await p.goto(url, { timeout: 6000, waitUntil: "domcontentloaded" });
             const pText = await p.evaluate(() => document.body?.innerText || '');
-            extractOwner(pText);
             const pHtml = await p.content();
             const pEmails = [
-              ...[...pHtml.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)].map(m => m[0].toLowerCase()),
+              ...[...pText.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)].map(m => m[0].toLowerCase()),
               ...[...pHtml.matchAll(/mailto:([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,})/gi)].map(m => m[1].toLowerCase())
             ].filter(isValidEmail);
             emails.push(...pEmails);
@@ -164,7 +271,7 @@ class WebsiteWorkerPool {
     const priority = ["contact@", "info@", "hello@", "support@"];
     let primary = emails.find(e => priority.some(p => e.startsWith(p))) || emails[0] || "";
     
-    return { primary, secondary: emails.filter(e => e !== primary), owner };
+    return { primary, secondary: emails.filter(e => e !== primary) };
   }
 }
 
@@ -185,6 +292,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
   let subLocations = await getSubLocations(location);
   let allLeads = [];
   let workerPromises = new Set();
+
+  const processedNames = new Set();
+  const processedPhones = new Set();
+  const processedWebsites = new Set();
+  let lastScrapedDetails = null;
 
   const processSubLocation = async (subLoc, sIdx) => {
     updateJob(jobId, { lastProcessedIndex: sIdx });
@@ -231,7 +343,6 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       await page.waitForSelector('div[role="feed"]', { timeout: 10000 }).catch(() => {});
       
       let noNewCount = 0;
-      const processedNames = new Set();
       let lastPaneTitle = "";
       let totalFoundInCity = 0;
 
@@ -254,7 +365,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                  name = await item.getAttribute("aria-label");
               } catch { continue; }
               
-              if (!name || processedNames.has(name)) continue;
+              if (!name) continue;
+              const cleanNameKey = name.toLowerCase().trim();
+              if (processedNames.has(cleanNameKey)) continue;
 
               const lowerName = name.toLowerCase();
               const lowerNiche = niche.toLowerCase();
@@ -287,7 +400,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
               }
 
-              processedNames.add(name);
+              processedNames.add(cleanNameKey);
               foundNewInBatch = true;
               totalFoundInCity++;
 
@@ -357,23 +470,76 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               continue;
           }
           
-          // CRITICAL FIX: Give React/Angular DOM time to finish rendering new text inside the pane
-          // Without this, we grab the *previous* company's website and rating before it visually updates
-          await page.waitForTimeout(350); // Reduced from 1000ms for flash fast speed
+          // CRITICAL FIX: Locate the active, visible side pane container
+          let sidePane = null;
+          try {
+              const escapedName = name.replace(/"/g, '\\"');
+              const exactPane = page.locator(`div[role="main"][aria-label="${escapedName}"]`).first();
+              if (await exactPane.count() > 0 && await exactPane.isVisible()) {
+                  sidePane = exactPane;
+              } else {
+                  const panes = page.locator('div[role="main"]');
+                  const count = await panes.count();
+                  for (let k = 0; k < count; k++) {
+                      const p = panes.nth(k);
+                      if (await p.isVisible()) {
+                          sidePane = p;
+                          break;
+                      }
+                  }
+              }
+          } catch {}
+          if (!sidePane) {
+              sidePane = page.locator('div[role="main"]').first();
+          }
 
-          const phone = await page.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
-          const website = await page.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
-          const address = await page.locator('button[data-item-id="address"]').first().textContent({ timeout: 500 }).catch(() => "");
+          // CRITICAL FIX: Avoid grabbing stale details from previous pane.
+          // If the phone, website or address is exactly identical to the previous scraped lead,
+          // it is extremely likely that the pane hasn't updated yet. We wait and re-read.
+          let phone = "";
+          let website = "";
+          let address = "";
+          let detailsUpdated = false;
+
+          for (let attempt = 0; attempt < 5; attempt++) {
+              phone = await sidePane.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 300 }).catch(() => "");
+              website = await sidePane.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 300 }).catch(() => "");
+              address = await sidePane.locator('button[data-item-id="address"]').first().textContent({ timeout: 300 }).catch(() => "");
+              
+              const phoneClean = cleanPhone(phone).replace(/[^\d]/g, '');
+              const websiteClean = website ? website.toLowerCase().trim().replace('www.', '') : '';
+              
+              if (lastScrapedDetails && 
+                  ((phoneClean && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '')) || 
+                   (websiteClean && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '')) || 
+                   (address && address.trim() === lastScrapedDetails.address.trim()))) {
+                  await page.waitForTimeout(250);
+              } else {
+                  detailsUpdated = true;
+                  break;
+              }
+          }
 
           let rating = '';
           let reviews = '';
           let sidePaneText = '';
+          let category = '';
+
           try {
-            const sidePane = page.locator(`div[role="main"][aria-label="${name.replace(/"/g, '\\"')}"]`).first();
-            
-            // Fast text extraction to check categories and description
             sidePaneText = await sidePane.textContent({ timeout: 500 }).catch(() => "");
             
+            // Extract category robustly
+            category = await sidePane.locator('button[jsaction*="category"]').first().textContent({ timeout: 300 }).catch(() => "");
+            if (!category) {
+                category = await sidePane.locator('button.D75GSc').first().textContent({ timeout: 300 }).catch(() => "");
+            }
+            if (!category) {
+                const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*·\s*([^·\n\r\t]+)/i);
+                if (match) {
+                    category = match[1].trim();
+                }
+            }
+
             const ratingBtnLabel = await sidePane
               .locator('button[aria-label*="star"]')
               .first()
@@ -391,9 +557,14 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               rating  = (await sidePane.locator('span.MW4etd').first().textContent({ timeout: 500 }).catch(() => '')).trim();
               reviews = (await sidePane.locator('span.UY7F9').first().textContent({ timeout: 500 }).catch(() => '')).replace(/[^\d]/g, '');
             }
-          } catch { /* rating is optional, never crash */ }
+          } catch { /* optional details */ }
 
-          if (!phone && !website) {
+          // Clean up phone and website for duplicate checks
+          const cleanPhoneNum = cleanPhone(phone);
+          const phoneCleanKey = cleanPhoneNum.replace(/[^\d]/g, '');
+          const websiteCleanKey = website ? website.toLowerCase().trim().replace('www.', '') : '';
+
+          if (!cleanPhoneNum && !website) {
               log(`⏭️ Skipping ${name} (No Phone/Web)`, jobId);
               continue;
           }
@@ -403,19 +574,32 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                continue;
           }
 
-          // Check Negative Keywords inside the side pane (catches categories like "Massage therapist")
+          // Check Job-Level duplicates before proceeding
+          if (phoneCleanKey && processedPhones.has(phoneCleanKey)) {
+              log(`⏭️ Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
+              continue;
+          }
+          if (websiteCleanKey && processedWebsites.has(websiteCleanKey) && !isSharedPlatform(websiteCleanKey)) {
+              log(`⏭️ Skipping ${name} (Duplicate website: ${website})`, jobId);
+              continue;
+          }
+
+          // STRICT NICHE ALIGNMENT CHECK
+          if (!isNicheAligned(niche, name, category, sidePaneText)) {
+              log(`⏭️ Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
+              continue;
+          }
+
+          // Check Negative Keywords inside sidePaneText
           if (sidePaneText) {
               const lowerPaneText = sidePaneText.toLowerCase();
               let hasNegativePane = false;
               for (const nw of negWords) {
-                  // We require the negative word to be a standalone word or phrase in the text to avoid aggressive partial matching,
-                  // but a simple .includes() is usually fine.
                   if (lowerPaneText.includes(nw)) {
                       hasNegativePane = true;
                       break;
                   }
               }
-              
               if (hasNegativePane) {
                   log(`⏭️ Skipping ${name} (Negative keyword found in business category/details)`, jobId);
                   continue;
@@ -425,16 +609,20 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           if (filterType === 'with_website' && !website) continue;
           if (filterType === 'without_website' && website) continue;
 
+          // Track this lead to prevent duplicates and stale checks in future iterations
+          if (phoneCleanKey) processedPhones.add(phoneCleanKey);
+          if (websiteCleanKey) processedWebsites.add(websiteCleanKey);
+          lastScrapedDetails = { phone: cleanPhoneNum, website: website || "", address: address || "" };
+
           let lead = {
             business_name: name.trim(),
-            phone: cleanPhone(phone),
+            phone: cleanPhoneNum,
             website: website || "",
             address: address.trim(),
             rating: rating || "",
             reviews: reviews || "0",
             city: subLoc,
             primary_email: "",
-            owner_name: "",
             intent: "LOW",
             score: 0
           };
@@ -451,12 +639,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                  return;
               }
 
-              let ownerName = data.owner;
-              if (!ownerName) {
-                ownerName = await extractDecisionMaker(lead.website).catch(() => '');
-              }
-
-              if (data.primary || ownerName) {
+              if (data.primary) {
                 let validatedEmail = data.primary || lead.primary_email;
                 if (validatedEmail && !validatedEmail.includes('[')) {
                     const status = await verifyEmail(validatedEmail);
@@ -470,15 +653,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 const enriched = {
                   ...lead,
                   primary_email: validatedEmail,
-                  owner_name: ownerName || lead.owner_name,
                 };
                 
                 const scoreResult = scoreLead(enriched);
                 enriched.intent = scoreResult.intent_tag;
                 enriched.score = scoreResult.score;
                 
-                if (data.primary) log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
-                if (ownerName) log(`👤 Owner mapped: ${ownerName}`, jobId);
+                log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
                 
                 updateJob(jobId, { enrichLead: enriched });
               }

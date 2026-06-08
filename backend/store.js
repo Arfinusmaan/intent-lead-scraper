@@ -56,7 +56,7 @@ function flushAppendBuffer(id, niche) {
   const file = path.join(dir, `leads-${id}.csv`);
   
   if (!fs.existsSync(file)) {
-    const headers = `"Name","Phone","Website","Primary Email","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+    const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
     fs.writeFileSync(file, headers);
   }
   
@@ -65,8 +65,6 @@ function flushAppendBuffer(id, niche) {
     l.phone || '',
     l.website || '',
     l.primary_email || '',
-    l.owner_name || '',
-    l.owner_role || '',
     l.rating || '',
     l.reviews || '',
     l.intent || '',
@@ -89,15 +87,13 @@ function rewriteCSV(id, leads, niche) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const file = path.join(dir, `leads-${id}.csv`);
-  const headers = `"Name","Phone","Website","Primary Email","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+  const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
 
   const rows = leads.map(l => [
     l.business_name || '',
     l.phone || '',
     l.website || '',
     l.primary_email || '',
-    l.owner_name || '',
-    l.owner_role || '',
     l.rating || '',
     l.reviews || '',
     l.intent || '',
@@ -194,14 +190,53 @@ export function updateJob(id, updates = {}) {
   }
 
   if (updates.leads && Array.isArray(updates.leads)) {
-    const existing = new Set(
+    const existingNames = new Set(
       job.leads.map(l => l.business_name.trim().toLowerCase())
     );
+    const existingPhones = new Set(
+      job.leads.map(l => l.phone ? l.phone.replace(/[^\d]/g, '') : '').filter(Boolean)
+    );
+    const existingWebsites = new Set(
+      job.leads.map(l => {
+        try {
+          if (!l.website) return '';
+          const host = new URL(l.website).hostname.toLowerCase();
+          return host.replace('www.', '');
+        } catch {
+          return l.website.trim().toLowerCase().replace('www.', '');
+        }
+      }).filter(Boolean)
+    );
+
+    const isSharedPlatform = (domain) => {
+      const shared = [
+        'facebook.com', 'instagram.com', 'yelp.com', 'google.com', 'twitter.com', 
+        'linkedin.com', 'youtube.com', 'manta.com', 'yellowpages.com', 'foursquare.com',
+        'mapquest.com', 'tripadvisor.com', 'groupon.com', 'angis.com', 'homeadvisor.com'
+      ];
+      return shared.some(s => domain.includes(s));
+    };
 
     const newLeads = updates.leads.filter(l => {
-      const key = l.business_name.trim().toLowerCase();
-      if (existing.has(key)) return false;
-      existing.add(key);
+      const nameKey = l.business_name.trim().toLowerCase();
+      if (existingNames.has(nameKey)) return false;
+
+      const phoneClean = l.phone ? l.phone.replace(/[^\d]/g, '') : '';
+      if (phoneClean && existingPhones.has(phoneClean)) return false;
+
+      let websiteClean = '';
+      if (l.website) {
+        try {
+          websiteClean = new URL(l.website).hostname.toLowerCase().replace('www.', '');
+        } catch {
+          websiteClean = l.website.trim().toLowerCase().replace('www.', '');
+        }
+      }
+      if (websiteClean && existingWebsites.has(websiteClean) && !isSharedPlatform(websiteClean)) return false;
+
+      existingNames.add(nameKey);
+      if (phoneClean) existingPhones.add(phoneClean);
+      if (websiteClean) websiteClean && existingWebsites.add(websiteClean);
       return true;
     });
 
@@ -230,7 +265,6 @@ export function updateJob(id, updates = {}) {
         debouncedRewriteCSV(id, job.leads, job.niche);
       } else {
         if (enriched.primary_email)    job.leads[idx].primary_email    = enriched.primary_email;
-        if (enriched.owner_name)       job.leads[idx].owner_name       = enriched.owner_name;
         if (enriched.intent)           job.leads[idx].intent           = enriched.intent;
 
         // Debounced rewrite — waits 500ms after last enrichment before hitting disk
@@ -260,6 +294,8 @@ export function loadJobsFromDisk() {
       for (const [id, job] of Object.entries(data)) {
         // Mark as not running on fresh boot
         if (job.status === 'running' || job.pauseFlag) {
+           job.status = 'stopped';
+           job.pauseFlag = false;
            job.workerRunning = false;
         }
         jobs.set(id, job);
