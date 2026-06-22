@@ -266,6 +266,7 @@ export function updateJob(id, updates = {}) {
       } else {
         if (enriched.primary_email)    job.leads[idx].primary_email    = enriched.primary_email;
         if (enriched.intent)           job.leads[idx].intent           = enriched.intent;
+        if (enriched.score !== undefined) job.leads[idx].score         = enriched.score;
 
         // Debounced rewrite — waits 500ms after last enrichment before hitting disk
         debouncedRewriteCSV(id, job.leads, job.niche);

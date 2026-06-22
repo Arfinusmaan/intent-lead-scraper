@@ -44,8 +44,6 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
          phone: data['Phone number'] || data.Phone || data.phone || '',
          website: data.website || data.Website || '',
          primary_email: data['Primary Email'] || data.primary_email || '',
-         owner_name: data['Owner Name'] || data.owner_name || '',
-         owner_role: data['Owner Role'] || data.owner_role || '',
          rating: data.Rating || data.rating || '',
          reviews: data.Review || data.Reviews || data.reviews || '',
          intent: data.Intent || data.intent || 'LOW',
@@ -220,15 +218,13 @@ app.get('/csv/:id', (req, res) => {
     return res.status(400).json({ error: 'No data available' });
   }
 
-  const headers = `"Name","Phone","Website","Primary Email","Owner Name","Owner Role","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+  const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
 
   const formatRow = (l) => [
     l.business_name || '',
     l.phone || '',
     l.website || '',
     l.primary_email || '',
-    l.owner_name || '',
-    l.owner_role || '',
     l.rating || '',
     l.reviews || '',
     l.intent || '',

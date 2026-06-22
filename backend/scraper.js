@@ -6,7 +6,6 @@ import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
 import { scoreLead } from "./intentScorer.js";
-import { verifyEmail } from "./verifier.js";
 
 function isSharedPlatform(domain) {
   if (!domain) return false;
@@ -24,31 +23,41 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
   const cleanCategory = (category || '').toLowerCase();
   const cleanText = (sidePaneText || '').toLowerCase();
 
-  // 1. Restoration
+  // 1. Restoration — home/property only, not auto/art/etc.
   if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
     const autoKeywords = [
-      'car', 'auto', 'vehicle', 'furniture', 'book', 'art', 'watch', 'pen', 'antique', 
-      'cabinet', 'wood', 'leather', 'classic', 'engine', 'motor', 'cycle', 'collision', 
-      'paint', 'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
+      'car ', 'auto ', 'vehicle', 'furniture', 'book ', 'art ', 'watch', 'pen ', 'antique',
+      'leather', 'classic car', 'engine', 'motor', 'cycle', 'collision',
+      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
     ];
     if (autoKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return false;
     }
-    const allowed = [
-      'water damage', 'fire damage', 'mold', 'remediation', 'restoration', 'cleanup', 
-      'disaster', 'flood', 'emergency', 'mitigation', 'carpet', 'dryer vent', 'contractor', 
-      'construction', 'builder', 'renovation', 'roofing', 'plumbing', 'damage'
+    // If name or category already contains a restoration keyword, accept immediately
+    const strongMatch = [
+      'water damage', 'fire damage', 'mold', 'remediation', 'restoration',
+      'flood', 'emergency service', 'mitigation', 'disaster'
     ];
-    if (!allowed.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw) || cleanText.includes(kw))) {
-      return false;
+    if (strongMatch.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+      return true;
     }
-    return true;
+    // Looser fallback — sidePaneText may contain the keyword even if name doesn't
+    const allowed = [
+      'cleanup', 'contractor', 'construction', 'builder', 'renovation',
+      'roofing', 'plumbing', 'damage', 'carpet cleaning', 'dryer vent'
+    ];
+    if (cleanText.length > 0 && allowed.some(kw => cleanText.includes(kw))) {
+      return true;
+    }
+    // If sidePaneText is empty (not yet loaded), give the lead the benefit of the doubt
+    if (!cleanText) return true;
+    return false;
   }
 
   // 2. Med Spa
   if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
     const disallowed = [
-      'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology', 
+      'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology',
       'nail salon', 'hair salon', 'barber', 'chiropractor'
     ];
     if (disallowed.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
@@ -72,15 +81,16 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
     return true;
   }
 
-  // 4. General fallback
+  // 4. General fallback — match any niche word in name, category, OR pane text
   const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an']);
   const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
-  
+
   if (nicheWords.length > 0) {
-    const matched = nicheWords.some(w => cleanName.includes(w) || cleanCategory.includes(w) || cleanText.includes(w));
-    if (!matched) {
-      return false;
-    }
+    const matched = nicheWords.some(w =>
+      cleanName.includes(w) || cleanCategory.includes(w) || cleanText.includes(w)
+    );
+    // If sidePaneText is empty, only check name/category — don't reject solely because text is missing
+    if (!matched && cleanText) return false;
   }
 
   return true;
@@ -182,13 +192,18 @@ class WebsiteWorkerPool {
 
 
     // =========================
-    // RAM SAVER: Block images & media, allow fonts & CSS
+    // RAM SAVER: Block images, media, fonts & icons
     // =========================
     const blockRoute = async (page) => {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        // Block heavy resources but allow scripts/websockets so modern sites don't break and skip
-        if (['image', 'media'].includes(type)) {
+        const url = route.request().url();
+        // Block heavy/decorative resources — scripts needed for modern sites
+        if (['image', 'media', 'font'].includes(type)) return route.abort();
+        // Block icon/analytics CDNs that add zero value
+        if (url.includes('googletagmanager') || url.includes('google-analytics') ||
+            url.includes('hotjar') || url.includes('intercom') || url.includes('typekit') ||
+            url.includes('fonts.googleapis') || url.includes('fonts.gstatic')) {
           return route.abort();
         }
         return route.continue();
@@ -298,6 +313,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
   const processedWebsites = new Set();
   let lastScrapedDetails = null;
 
+  // Parse negative keywords once for the entire job
+  const negWords = (negativeKeywords || '')
+      .toLowerCase()
+      .split(',')
+      .map(w => w.trim())
+      .filter(w => w.length > 0);
+
   const processSubLocation = async (subLoc, sIdx) => {
     updateJob(jobId, { lastProcessedIndex: sIdx });
     await checkPause(jobId);
@@ -305,18 +327,23 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     const page = await context.newPage();
     
     // =========================
-    // RAM SAVER: Block images natively on Google Maps
+    // SPEED: Block images, media, fonts on Google Maps page
     // =========================
     await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        if (['image', 'media'].includes(type)) return route.abort();
+        const url = route.request().url();
+        if (['image', 'media', 'font'].includes(type)) return route.abort();
+        if (url.includes('googletagmanager') || url.includes('google-analytics') ||
+            url.includes('fonts.googleapis') || url.includes('fonts.gstatic')) {
+          return route.abort();
+        }
         return route.continue();
     });
     
     try {
       const query = `${niche} in ${subLoc}`;
       log(`🚀 Searching: ${query}`, jobId);
-      await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded' });
+      await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       // =========================
       // CAPTCHA / BOT DETECTION ENGINE AUTO-PAUSE
@@ -340,19 +367,21 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
         if (await rejectBtn.count()) await rejectBtn.click();
       } catch {}
 
-      await page.waitForSelector('div[role="feed"]', { timeout: 10000 }).catch(() => {});
+      await page.waitForSelector('div[role="feed"]', { timeout: 5000 }).catch(() => {});
       
       let noNewCount = 0;
       let lastPaneTitle = "";
       let totalFoundInCity = 0;
 
-      while (noNewCount < 3 && !getJob(jobId)?.stopFlag) {
+      while (noNewCount < 6 && !getJob(jobId)?.stopFlag) {
           const feedLocator = page.locator('div[role="feed"]');
           if (await feedLocator.count() === 0) break; // Check if the feed exists before scrolling
           
           const listings = feedLocator.locator('a[href*="/place"]');
           const batchCount = await listings.count();
           let foundNewInBatch = false;
+
+          // negWords already parsed once at the top of scrapeGoogleMaps
 
           for (let i = 0; i < batchCount; i++) {
               await checkPause(jobId);
@@ -372,13 +401,6 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               const lowerName = name.toLowerCase();
               const lowerNiche = niche.toLowerCase();
               
-              // Process Negative Keywords
-              const negWords = (negativeKeywords || '')
-                  .toLowerCase()
-                  .split(',')
-                  .map(w => w.trim())
-                  .filter(w => w.length > 0);
-
               let hasNegative = false;
               for (const nw of negWords) {
                   if (lowerName.includes(nw)) {
@@ -435,29 +457,46 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
           let paneFound = false;
-          for (let attempt = 0; attempt < 25; attempt++) {
+          for (let attempt = 0; attempt < 45; attempt++) {
               if (attempt === 5 && !paneFound) {
-                  // Force a fast fallback click if Google Maps ignored it
+                  try { await targetItem.evaluate(node => node.click()); } catch {}
+              }
+              if (attempt === 15 && !paneFound) {
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
 
-              // Instant DOM evaluation: Bypasses Playwright's 30-second implicit wait which was freezing the engine
+              // Broader selector set — Google Maps changes class names frequently
               const paneTitle = await page.evaluate(() => {
-                  const h1s = Array.from(document.querySelectorAll('h1.DUwDvf, h1.fontHeadlineLarge'));
-                  const visible = h1s.find(el => el.offsetParent !== null);
-                  return visible ? visible.innerText.trim() : "";
-              }).catch(() => "");
+                  // Try known class names first, then fall back to any visible h1 inside the detail pane
+                  const selectors = [
+                    'h1.DUwDvf',
+                    'h1.fontHeadlineLarge', 
+                    '[role="main"] h1',
+                    'div[aria-label] h1',
+                    'h1'
+                  ];
+                  for (const sel of selectors) {
+                    const els = Array.from(document.querySelectorAll(sel));
+                    const visible = els.find(el => el.offsetParent !== null && el.innerText.trim().length > 1);
+                    if (visible) return visible.innerText.trim();
+                  }
+                  return '';
+              }).catch(() => '');
               
               if (paneTitle && paneTitle !== lastPaneTitle) {
                   paneFound = true;
                   lastPaneTitle = paneTitle;
                   break;
               }
-              
+
+              // Franchise/chain fallback: pane title matches our target name
+              // even if it's the same text as lastPaneTitle (two branches of same chain)
               const paneLower = paneTitle.toLowerCase().trim();
               const nameLower = name.toLowerCase().trim();
               const nameAnchor = nameLower.split(/\s+/).slice(0, 3).join(' ');
-              if (attempt > 4 && paneLower.length > 2 && (nameLower.includes(paneLower) || paneLower.includes(nameLower) || paneLower.includes(nameAnchor))) {
+              if (paneTitle && attempt > 2 && (
+                nameLower.includes(paneLower) || paneLower.includes(nameLower) || paneLower.includes(nameAnchor)
+              )) {
                   paneFound = true;
                   lastPaneTitle = paneTitle;
                   break;
@@ -501,19 +540,22 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           let address = "";
           let detailsUpdated = false;
 
-          for (let attempt = 0; attempt < 5; attempt++) {
-              phone = await sidePane.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 300 }).catch(() => "");
-              website = await sidePane.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 300 }).catch(() => "");
-              address = await sidePane.locator('button[data-item-id="address"]').first().textContent({ timeout: 300 }).catch(() => "");
-              
+          for (let attempt = 0; attempt < 8; attempt++) {
+              phone = await sidePane.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
+              website = await sidePane.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
+              address = await sidePane.locator('button[data-item-id="address"]').first().textContent({ timeout: 500 }).catch(() => "");
+
               const phoneClean = cleanPhone(phone).replace(/[^\d]/g, '');
               const websiteClean = website ? website.toLowerCase().trim().replace('www.', '') : '';
-              
-              if (lastScrapedDetails && 
-                  ((phoneClean && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '')) || 
-                   (websiteClean && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '')) || 
-                   (address && address.trim() === lastScrapedDetails.address.trim()))) {
-                  await page.waitForTimeout(250);
+              const addrClean = (address || '').trim();
+
+              // Only consider stale if BOTH phone AND website match the previous lead
+              // (address alone is too unreliable — offices share buildings)
+              const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
+              const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
+
+              if (phoneStale && websiteStale) {
+                  await page.waitForTimeout(300);
               } else {
                   detailsUpdated = true;
                   break;
@@ -540,23 +582,43 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 }
             }
 
-            const ratingBtnLabel = await sidePane
-              .locator('button[aria-label*="star"]')
-              .first()
-              .getAttribute('aria-label', { timeout: 500 })
-              .catch(() => '');
-
-            if (ratingBtnLabel) {
-              const rMatch = ratingBtnLabel.match(/([\d.]+)\s*star/i);
-              const vMatch = ratingBtnLabel.match(/([\d,]+)\s*(?:rating|review)/i);
-              if (rMatch) rating  = rMatch[1];
-              if (vMatch) reviews = vMatch[1].replace(/,/g, '');
-            }
-
-            if (!rating) {
-              rating  = (await sidePane.locator('span.MW4etd').first().textContent({ timeout: 500 }).catch(() => '')).trim();
-              reviews = (await sidePane.locator('span.UY7F9').first().textContent({ timeout: 500 }).catch(() => '')).replace(/[^\d]/g, '');
-            }
+            const parsed = await sidePane.evaluate((pane) => {
+               let r = '', v = '';
+               // 1. Try modern layout (div.F7nice)
+               const f7 = pane.querySelector('div.F7nice');
+               if (f7) {
+                   const rSpan = f7.querySelector('span[aria-hidden="true"]');
+                   if (rSpan) r = rSpan.innerText.trim();
+                   
+                   const vSpan = f7.querySelector('span[aria-label*="review"]') || f7.querySelector('span[aria-label*="rating"]');
+                   if (vSpan) {
+                       const match = vSpan.getAttribute('aria-label').match(/([\d,]+)/);
+                       if (match) v = match[1].replace(/,/g, '');
+                   }
+               }
+               // 2. Try aria-labels directly
+               if (!r) {
+                  const labelSpan = pane.querySelector('span[aria-label*="stars"]') || pane.querySelector('div[aria-label*="stars"]');
+                  if (labelSpan) {
+                     const label = labelSpan.getAttribute('aria-label');
+                     const rMatch = label.match(/([\d.]+)\s*star/i);
+                     const vMatch = label.match(/([\d,]+)\s*(?:rating|review)/i);
+                     if (rMatch) r = rMatch[1];
+                     if (vMatch) v = vMatch[1].replace(/,/g, '');
+                  }
+               }
+               // 3. Try old class names
+               if (!r) {
+                  const mw4 = pane.querySelector('span.MW4etd');
+                  if (mw4) r = mw4.innerText.trim();
+                  const uy = pane.querySelector('span.UY7F9');
+                  if (uy) v = uy.innerText.replace(/[^\d]/g, '');
+               }
+               return { r, v };
+            }).catch(() => ({ r: '', v: '' }));
+            
+            if (parsed.r) rating = parsed.r;
+            if (parsed.v) reviews = parsed.v;
           } catch { /* optional details */ }
 
           // Clean up phone and website for duplicate checks
@@ -640,27 +702,15 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               }
 
               if (data.primary) {
-                let validatedEmail = data.primary || lead.primary_email;
-                if (validatedEmail && !validatedEmail.includes('[')) {
-                    const status = await verifyEmail(validatedEmail);
-                    if (status !== 'not_found') {
-                       validatedEmail = `${validatedEmail} [${status}]`;
-                    } else {
-                       validatedEmail = `[INVALID] ${validatedEmail}`;
-                    }
-                }
-
+                // Store email immediately — no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
                 const enriched = {
                   ...lead,
-                  primary_email: validatedEmail,
+                  primary_email: data.primary,
                 };
-                
                 const scoreResult = scoreLead(enriched);
                 enriched.intent = scoreResult.intent_tag;
                 enriched.score = scoreResult.score;
-                
                 log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
-                
                 updateJob(jobId, { enrichLead: enriched });
               }
             };
@@ -715,12 +765,19 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
 
   if (mode === 'parallel') {
       // Memory Optimization: Hard cap Maps page concurrency to 2 on 8GB RAM systems.
-      // Background web workers can still use `workerCount`.
       const concurrency = Math.max(1, Math.min(parseInt(workerCount), 2));
+      // Use a mutex-safe counter — JS is single-threaded but async interleaving
+      // can cause two coroutines to read the same index before either increments.
       let currentIdx = job.lastProcessedIndex || 0;
+      const getNextIdx = () => {
+        const idx = currentIdx;
+        currentIdx++;
+        return idx;
+      };
       const tasks = Array.from({ length: concurrency }, async () => {
-          while (currentIdx < subLocations.length && !getJob(jobId)?.stopFlag) {
-              const idx = currentIdx++;
+          while (!getJob(jobId)?.stopFlag) {
+              const idx = getNextIdx();
+              if (idx >= subLocations.length) break;
               await processSubLocation(subLocations[idx], idx);
           }
       });
@@ -733,6 +790,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       }
   }
 
+  // Wait for background enrichment workers to finish BEFORE closing browser
   if (workerPromises.size > 0) {
       log(`⏳ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
       await Promise.allSettled(Array.from(workerPromises));
@@ -765,7 +823,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
 
   let completed = 0;
   
-  const batchSize = 100;
+  const batchSize = parseInt(workerCount) || 3;
   
   await processInBatches(leads, batchSize, async (lead) => {
      if (!lead.website || getJob(jobId)?.stopFlag) {
@@ -783,36 +841,17 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
            return;
         }
 
-        let ownerName = data.owner;
-        if (!ownerName) {
-           ownerName = await extractDecisionMaker(lead.website).catch(() => '');
-        }
-        
-        let validatedEmail = data.primary || lead.primary_email;
-        if (validatedEmail && !validatedEmail.includes('[')) {
-            const status = await verifyEmail(validatedEmail);
-            if (status !== 'not_found') {
-               validatedEmail = `${validatedEmail} [${status}]`;
-            } else {
-               validatedEmail = `[INVALID] ${validatedEmail}`;
-            }
-        }
+        const validatedEmail = data.primary || lead.primary_email;
 
         const enriched = {
            ...lead,
            primary_email: validatedEmail,
-           owner_name: ownerName || lead.owner_name,
         };
-        
         const scoreResult = scoreLead(enriched);
         enriched.intent = scoreResult.intent_tag;
         enriched.score = scoreResult.score;
-        
         if (data.primary) log(`📧 Found Email for ${lead.business_name}: ${data.primary}`, jobId);
-        if (ownerName) log(`👤 Owner mapped: ${ownerName}`, jobId);
-        
         updateJob(jobId, { enrichLead: enriched });
-        
         completed++;
         onProgress({ progress: Math.floor((completed / leads.length) * 100), city: "Enriching Websites" });
      }, negWords);

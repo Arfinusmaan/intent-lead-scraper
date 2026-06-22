@@ -377,7 +377,7 @@ export default function App() {
                           <Download className="w-4 h-4" /> Download Live CSV
                         </button>
                         
-                        {job.status === "running" && (
+                        {(job.status === "running" || job.pauseFlag) && (
                           <div className="flex flex-col gap-2">
                             <div className="flex gap-2">
                               <button
@@ -457,7 +457,6 @@ export default function App() {
                               </td>
                               <td className="px-6 py-4">
                                 <p className="text-sm text-slate-300 font-mono mb-1">{l.phone || "-"}</p>
-                                <p className="text-xs text-slate-400 flex items-center gap-1"><User className="w-3 h-3"/> {l.owner_name ? <span className="text-emerald-400">{l.owner_name}</span> : "Unknown"}</p>
                               </td>
                               <td className="px-6 py-4">
                                 <div className="flex flex-col gap-1.5">
