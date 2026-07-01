@@ -31,10 +31,10 @@ function appendToCSV(id, newLeads, niche) {
   buffer.leads.push(...newLeads);
   
   // Flush if buffer is large, or set a timer to flush when idle
-  if (buffer.leads.length >= 50) {
+  if (buffer.leads.length >= 10) {  // flush every 10 leads — protects data sooner
       flushAppendBuffer(id, niche);
   } else if (!buffer.timer) {
-      buffer.timer = setTimeout(() => flushAppendBuffer(id, niche), 1000);
+      buffer.timer = setTimeout(() => flushAppendBuffer(id, niche), 2000);
   }
 }
 
@@ -314,11 +314,33 @@ export function saveJobsToDisk() {
   try {
     const dataToSave = {};
     for (const [id, job] of jobs.entries()) {
-      if (job.pinned) dataToSave[id] = job;
+      // Save ALL jobs — not just pinned — so a server restart never loses data
+      dataToSave[id] = job;
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2));
   } catch (err) {
-    // silently fail to not spam logs
+    console.log(`⚠️ Failed to save jobs DB: ${err.message}`);
+  }
+}
+
+// Read the raw CSV file from disk for a given job id (fallback for download)
+export function readCSVFromDisk(id) {
+  const file = path.join(process.cwd(), 'exports', `leads-${id}.csv`);
+  if (fs.existsSync(file)) {
+    try {
+      return fs.readFileSync(file, 'utf-8');
+    } catch (e) {
+      return null;
+    }
+  }
+  return null;
+}
+
+// Flush ALL pending append buffers to disk (called on shutdown)
+export function flushAllBuffers() {
+  for (const [id, buffer] of appendBuffers.entries()) {
+    const job = jobs.get(id);
+    if (job) flushAppendBuffer(id, job.niche);
   }
 }
 
@@ -327,27 +349,45 @@ setInterval(() => {
   if (jobs.size > 0) saveJobsToDisk();
 }, 10000);
 
-// Auto-cleanup unpinned memory after 4 hours
+// =========================
+// GRACEFUL SHUTDOWN
+// Flush all buffered leads + save jobs DB before the process exits
+// Handles: Ctrl+C, nodemon restart, PM2 reload, kill signal
+// =========================
+function gracefulShutdown(signal) {
+  console.log(`\n💤 ${signal} received — flushing buffers and saving state...`);
+  try {
+    flushAllBuffers();
+    saveJobsToDisk();
+    console.log('✅ All data saved to disk. Goodbye.');
+  } catch (e) {
+    console.error('⚠️ Shutdown save failed:', e.message);
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT',  () => gracefulShutdown('SIGINT'));   // Ctrl+C
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));  // kill / PM2 stop
+process.on('SIGHUP',  () => gracefulShutdown('SIGHUP'));   // terminal closed
+
+// Auto-cleanup: remove jobs from MEMORY only after 24 hours AND only if they have no leads
+// CSV files and the jobs_db.json persist on disk regardless
 setInterval(() => {
   const now = Date.now();
   for (const [id, job] of jobs.entries()) {
-    // Keep pinned jobs or currently running jobs
+    // Never evict pinned, running, or paused jobs from memory
     if (job.pinned || job.status === 'running' || job.pauseFlag) continue;
-    
-    // Delete jobs older than 4 hours
+    // Never evict completed jobs that have leads — keep them accessible in History
+    if (job.leads && job.leads.length > 0) continue;
+
+    // Only evict empty jobs older than 24 hours
     const age = now - new Date(job.createdAt).getTime();
-    if (age > 4 * 60 * 60 * 1000) {
+    if (age > 24 * 60 * 60 * 1000) {
       jobs.delete(id);
-      // optionally delete the CSV to save space, but maybe let them keep the file if they know the ID, 
-      // or we can auto-delete the unpinned CSV, user requested "not to save all the leads" meaning don't keep them forever securely
-      const file = path.join(process.cwd(), 'exports', `leads-${id}.csv`);
-      if (fs.existsSync(file)) {
-        try { fs.unlinkSync(file); } catch (e) {}
-      }
-      console.log(`🧹 Cleaned unpinned old job ${id}`);
+      console.log(`🧹 Evicted empty job ${id} from memory (24h old)`);
     }
   }
-}, 10 * 60 * 1000);
+}, 30 * 60 * 1000);
 
 // =========================
 // DELETE JOB

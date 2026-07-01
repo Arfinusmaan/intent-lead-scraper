@@ -7,7 +7,7 @@ import csvParser from 'csv-parser';
 import stream from 'stream';
 
 import { scrapeGoogleMaps, enrichCSVList } from './scraper.js';
-import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs } from './store.js';
+import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, readCSVFromDisk, saveJobsToDisk, flushAllBuffers } from './store.js';
 import { log } from './utils.js';
 
 const app = express();
@@ -171,6 +171,7 @@ app.post('/scrape', async (req, res) => {
         // Keep status as 'cancelled' — don't overwrite what the /stop endpoint set
         log(`🛑 Cancelled with ${job.leads.length} leads collected`, jobId);
         updateJob(jobId, { stats });
+        saveJobsToDisk(); // Force-save immediately on cancel
         return;
       }
 
@@ -180,6 +181,7 @@ app.post('/scrape', async (req, res) => {
         stats
       });
 
+      saveJobsToDisk(); // Force-save immediately on completion
       log(`✅ Completed: ${job.leads.length} leads`, jobId);
 
     } catch (err) {
@@ -191,6 +193,7 @@ app.post('/scrape', async (req, res) => {
           status: 'failed',
           error: err.message
         });
+        saveJobsToDisk(); // Force-save immediately on failure too
       }
     }
   })();
@@ -209,47 +212,56 @@ app.get('/results/:id', (req, res) => {
 });
 
 // =========================
-// CSV EXPORT (WORKS ALWAYS)
+// CSV EXPORT (BULLETPROOF — never fails if leads exist)
 // =========================
 app.get('/csv/:id', (req, res) => {
   const job = getJob(req.params.id);
 
-  if (!job || !job.leads.length) {
-    return res.status(400).json({ error: 'No data available' });
+  // --- Path 1: Job is in memory and has leads (normal path) ---
+  if (job && job.leads && job.leads.length > 0) {
+    const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+
+    const formatRow = (l) => [
+      l.business_name || '',
+      l.phone || '',
+      l.website || '',
+      l.primary_email || '',
+      l.rating || '',
+      l.reviews || '',
+      l.intent || '',
+      l.score || '',
+      l.website_quality || '',
+      l.city || '',
+      job.niche || ''
+    ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
+
+    const withEmail = job.leads.filter(l => l.primary_email);
+    const withoutEmail = job.leads.filter(l => !l.primary_email);
+
+    let csvContent = "";
+    if (withEmail.length > 0) {
+        csvContent += `"--- WITH EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
+    }
+    if (withoutEmail.length > 0) {
+        csvContent += `"--- WITHOUT EMAIL ---"\n` + headers + withoutEmail.map(formatRow).join('\n') + '\n';
+    }
+    if (!csvContent) csvContent = headers + job.leads.map(formatRow).join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
+    return res.send(csvContent);
   }
 
-  const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
-
-  const formatRow = (l) => [
-    l.business_name || '',
-    l.phone || '',
-    l.website || '',
-    l.primary_email || '',
-    l.rating || '',
-    l.reviews || '',
-    l.intent || '',
-    l.score || '',
-    l.website_quality || '',
-    l.city || '',
-    job.niche || ''
-  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
-
-  const withEmail = job.leads.filter(l => l.primary_email);
-  const withoutEmail = job.leads.filter(l => !l.primary_email);
-
-  let csvContent = "";
-  if (withEmail.length > 0) {
-      csvContent += `"--- WITH EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
-  }
-  if (withoutEmail.length > 0) {
-      csvContent += `"--- WITHOUT EMAIL ---"\n` + headers + withoutEmail.map(formatRow).join('\n') + '\n';
+  // --- Path 2: Job fell out of memory (server restarted) — serve the disk CSV file ---
+  const diskCSV = readCSVFromDisk(req.params.id);
+  if (diskCSV) {
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
+    return res.send(diskCSV);
   }
 
-  if (!csvContent) csvContent = headers + job.leads.map(formatRow).join('\n');
-
-  res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
-  res.send(csvContent);
+  // --- Path 3: Nothing found anywhere ---
+  return res.status(404).json({ error: 'No leads found. The job may have been deleted or never produced any data.' });
 });
 
 // =========================
@@ -283,6 +295,9 @@ app.post('/stop/:id', (req, res) => {
   setStopFlag(jobId, true);
   updateJob(jobId, { status: 'cancelled', cancelled: true });
   log(`🛑 Stop requested`, jobId);
+  // Immediately flush any buffered leads so they’re in the CSV before download
+  flushAllBuffers();
+  saveJobsToDisk();
   res.json({ status: 'stopping' });
 });
 
