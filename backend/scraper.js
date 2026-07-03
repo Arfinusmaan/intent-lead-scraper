@@ -21,36 +21,42 @@ function isSharedPlatform(domain) {
 // NICHE ALIGNMENT ENGINE
 // =========================
 // Each niche config defines:
-//   strongMatch  â€” keywords that CONFIRM the lead belongs to this niche (checked in name + category first)
-//   exclusions   â€” keywords that REJECT the lead regardless (checked in name + category)
-//   textFallback â€” keywords that can confirm the lead if name/category have no strong match
+//   strongMatch  Ã¢â‚¬â€ keywords that CONFIRM the lead belongs to this niche (checked in name + category first)
+//   exclusions   Ã¢â‚¬â€ keywords that REJECT the lead regardless (checked in name + category)
+//   textFallback Ã¢â‚¬â€ keywords that can confirm the lead if name/category have no strong match
 //                  but the side pane text mentions them (weaker signal)
 // Logic:
-//   1. If name or category hits an exclusion â†’ REJECT
-//   2. If name or category hits a strongMatch â†’ ACCEPT
-//   3. If sidePaneText hits a textFallback AND no exclusion â†’ ACCEPT
-//   4. If none of the above match â†’ REJECT (strict mode)
+//   1. If name or category hits an exclusion Ã¢â€ â€™ REJECT
+//   2. If name or category hits a strongMatch Ã¢â€ â€™ ACCEPT
+//   3. If sidePaneText hits a textFallback AND no exclusion Ã¢â€ â€™ ACCEPT
+//   4. If none of the above match Ã¢â€ â€™ REJECT (strict mode)
 
 const NICHE_CONFIGS = [
   {
-    // Water/fire/mold restoration â€” home & property ONLY
+    // Water/fire/mold restoration Ã¢â‚¬â€ home & property ONLY
     test: n => n.includes('restoration') || n.includes('water damage') || n.includes('fire damage') || n.includes('mold') || n.includes('remediation'),
-    // If the Google Maps CATEGORY explicitly says one of these â†’ hard reject (not restoration)
+    // If the Google Maps CATEGORY explicitly says one of these Ã¢â€ â€™ hard reject (not restoration)
     categoryExclusions: [
       'plumber', 'plumbing', 'roofing', 'roofer', 'electrician', 'electrical',
       'painter', 'painting contractor', 'landscaping', 'lawn care', 'tree service',
       'auto body', 'auto repair', 'car dealership', 'pest control', 'hvac',
-      'general contractor', 'handyman', 'cleaning service', 'pressure washing'
+      'general contractor', 'handyman', 'cleaning service', 'pressure washing',
+      'church', 'place of worship', 'counselor', 'therapist', 'antique store', 
+      'furniture repair', 'museum', 'historical place'
     ],
     exclusions: [
       'auto restoration', 'car restoration', 'auto body', 'vehicle restoration',
       'furniture restoration', 'art restoration', 'book restoration', 'watch restoration',
       'antique restoration', 'leather restoration', 'classic car', 'auto repair',
       'body shop', 'transmission', 'upholstery', 'collision', 'dental', 'teeth whitening',
-      'hair restoration', 'motor restoration', 'cycle restoration', 'pen restoration'
+      'hair restoration', 'motor restoration', 'cycle restoration', 'pen restoration',
+      'church', 'ministry', 'worship', 'counseling', 'counselling', 'therapy', 'counsel',
+      'christian', 'bible', 'pinball', 'arcade', 'toy', 'antique', 'furniture', 'upholstery',
+      'art', 'photo', 'photography', 'clock', 'watch', 'dental', 'hair', 'spa', 'recycling',
+      'reclamation', 'heritage', 'society', 'historical'
     ],
     strongMatch: [
-      'water damage', 'fire damage', 'mold', 'mould', 'remediation', 'restoration',
+      'water damage', 'fire damage', 'mold', 'mould', 'remediation',
       'flood', 'mitigation', 'disaster recovery', 'smoke damage', 'sewage',
       'biohazard', 'dehumidification', 'drying'
     ],
@@ -245,7 +251,7 @@ const NICHE_CONFIGS = [
   }
 ];
 
-// Helper â€” check if category matches a list of exclusion patterns
+// Helper Ã¢â‚¬â€ check if category matches a list of exclusion patterns
 function categoryMatchesExclusion(category, exclusionList) {
   const cat = category.toLowerCase().trim();
   if (!cat) return false;
@@ -263,7 +269,7 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
 
   if (config) {
     // Step 0: Reject if the Google Maps CATEGORY explicitly belongs to a different trade
-    // This is the strongest signal â€” Google Maps category = what the business actually IS
+    // This is the strongest signal Ã¢â‚¬â€ Google Maps category = what the business actually IS
     if (config.categoryExclusions && cleanCategory) {
       if (categoryMatchesExclusion(cleanCategory, config.categoryExclusions)) {
         return false;
@@ -285,24 +291,24 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
     }
 
     // Step 3: Accept if side pane text contains a specific textFallback phrase
-    // (multi-word phrases only â€” avoids single-word false positives)
+    // (multi-word phrases only Ã¢â‚¬â€ avoids single-word false positives)
     if (cleanText) {
       for (const fb of config.textFallback) {
         if (cleanText.includes(fb)) {
           return true;
         }
       }
-      // All checks failed and we have pane text to judge from â†’ REJECT
+      // All checks failed and we have pane text to judge from Ã¢â€ â€™ REJECT
       return false;
     }
 
-    // Step 4: No pane text loaded yet â†’ give benefit of the doubt (will be re-checked later)
+    // Step 4: No pane text loaded yet Ã¢â€ â€™ give benefit of the doubt (will be re-checked later)
     return true;
   }
 
-  // â”€â”€â”€ Fallback for unconfigured niches â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Fallback for unconfigured niches Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
   // Require the niche words to appear in the business NAME or CATEGORY.
-  // Matching only in sidePaneText is too loose â€” every page mentions related services.
+  // Matching only in sidePaneText is too loose Ã¢â‚¬â€ every page mentions related services.
   const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an']);
   const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
 
@@ -316,10 +322,10 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
       return nicheWords.some(w => cleanText.includes(w));
     }
 
-    // Category exists but no match found â†’ reject
+    // Category exists but no match found Ã¢â€ â€™ reject
     if (cleanCategory) return false;
 
-    // Neither category nor pane text available â†’ benefit of the doubt
+    // Neither category nor pane text available Ã¢â€ â€™ benefit of the doubt
     if (!cleanText) return true;
 
     return false;
@@ -328,7 +334,7 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
   return true;
 }
 
-// Normalize phone numbers â€” strip everything except digits and leading +
+// Normalize phone numbers Ã¢â‚¬â€ strip everything except digits and leading +
 function cleanPhone(phone) {
   if (!phone) return '';
   const digits = phone.replace(/\D/g, '');
@@ -357,7 +363,7 @@ class WebsiteWorkerPool {
     this.activeWorkers++;
     try {
       const result = await this.extract(website, negWords);
-      await callback(result); // await â€” callback is async (calls extractDecisionMaker)
+      await callback(result); // await Ã¢â‚¬â€ callback is async (calls extractDecisionMaker)
     } finally {
       this.activeWorkers--;
       if (this.queue.length > 0) {
@@ -431,7 +437,7 @@ class WebsiteWorkerPool {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
         const url = route.request().url();
-        // Block heavy/decorative resources â€” scripts needed for modern sites
+        // Block heavy/decorative resources Ã¢â‚¬â€ scripts needed for modern sites
         if (['image', 'media', 'font'].includes(type)) return route.abort();
         // Block icon/analytics CDNs that add zero value
         if (url.includes('googletagmanager') || url.includes('google-analytics') ||
@@ -488,7 +494,7 @@ class WebsiteWorkerPool {
           }
       }
     } catch (e) {
-      // Silently continue â€” page may have failed but we move on
+      // Silently continue Ã¢â‚¬â€ page may have failed but we move on
     } finally {
       if (homePage) await homePage.close().catch(() => {});
     }
@@ -577,7 +583,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     
     try {
       const query = `${niche} in ${subLoc}`;
-      log(`ðŸš€ Searching: ${query}`, jobId);
+      log(`Ã°Å¸Å¡â‚¬ Searching: ${query}`, jobId);
       await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       // =========================
@@ -585,14 +591,14 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       // =========================
       const pageText = await page.content();
       if (pageText.includes('action="CaptchaRedirect"') || pageText.includes('Our systems have detected unusual traffic')) {
-          log(`ðŸ›‘ CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
+          log(`Ã°Å¸â€ºâ€˜ CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
           setPauseFlag(jobId, true);
           updateJob(jobId, { currentCity: "PAUSED: Captcha Action Required" });
           // Wait safely until the user manually hits 'Resume'
           while (getJob(jobId)?.pauseFlag) {
              await new Promise(r => setTimeout(r, 2000));
           }
-          log(`â–¶ï¸ Engine Resumed after Captcha!`, jobId);
+          log(`Ã¢â€“Â¶Ã¯Â¸Â Engine Resumed after Captcha!`, jobId);
           // Refresh the page now that it's solved
           await page.reload({ waitUntil: 'domcontentloaded' });
       }
@@ -645,14 +651,14 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               }
 
               if (hasNegative) {
-                  log(`â­ï¸ Skipping ${name} (Negative keyword match in name)`, jobId);
+                  log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Negative keyword match in name)`, jobId);
                   continue;
               }
               
               // Built-in heuristics for pure Massage Spas if looking for Med Spas
               if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa')) {
                   if (lowerName.includes('massage') && !lowerName.match(/med|medical|aesthetic|laser|clinic|beauty/)) {
-                      log(`â­ï¸ Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
+                      log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
                       continue;
                   }
               }
@@ -662,7 +668,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               totalFoundInCity++;
 
               try {
-                  log(`ðŸ‘‰ Clicking: ${name}`, jobId);
+                  log(`Ã°Å¸â€˜â€° Clicking: ${name}`, jobId);
                   const safeName = name.replace(/"/g, '\\"');
                   let targetItem = feedLocator.locator(`a[aria-label="${safeName}"]`).first();
                   
@@ -670,7 +676,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                       // Fallback: If label vanished from virtual DOM, grab directly by index
                       targetItem = listings.nth(i);
                       if (await targetItem.count() === 0) {
-                          log(`âš ï¸ Element vanished entirely, skipping.`, jobId);
+                          log(`Ã¢Å¡Â Ã¯Â¸Â Element vanished entirely, skipping.`, jobId);
                           continue;
                       }
                   }
@@ -700,7 +706,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
 
-              // Broader selector set â€” Google Maps changes class names frequently
+              // Broader selector set Ã¢â‚¬â€ Google Maps changes class names frequently
               const paneTitle = await page.evaluate(() => {
                   // Try known class names first, then fall back to any visible h1 inside the detail pane
                   const selectors = [
@@ -740,7 +746,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               await page.waitForTimeout(200);
           }
           if (!paneFound) {
-              log(`âš ï¸ Timeout loading pane for ${name}, Skipping.`, jobId);
+              log(`Ã¢Å¡Â Ã¯Â¸Â Timeout loading pane for ${name}, Skipping.`, jobId);
               continue;
           }
           
@@ -785,7 +791,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               const addrClean = (address || '').trim();
 
               // Only consider stale if BOTH phone AND website match the previous lead
-              // (address alone is too unreliable â€” offices share buildings)
+              // (address alone is too unreliable Ã¢â‚¬â€ offices share buildings)
               const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
               const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
 
@@ -811,7 +817,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 category = await sidePane.locator('button.D75GSc').first().textContent({ timeout: 300 }).catch(() => "");
             }
             if (!category) {
-                const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*Â·\s*([^Â·\n\r\t]+)/i);
+                const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*Ã‚Â·\s*([^Ã‚Â·\n\r\t]+)/i);
                 if (match) {
                     category = match[1].trim();
                 }
@@ -862,28 +868,28 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           const websiteCleanKey = website ? website.toLowerCase().trim().replace('www.', '') : '';
 
           if (!cleanPhoneNum && !website) {
-              log(`â­ï¸ Skipping ${name} (No Phone/Web)`, jobId);
+              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (No Phone/Web)`, jobId);
               continue;
           }
 
           if (website && website.includes('google.com')) {
-               log(`â­ï¸ Skipping Google Link for ${name}`, jobId);
+               log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping Google Link for ${name}`, jobId);
                continue;
           }
 
           // Check Job-Level duplicates before proceeding
           if (phoneCleanKey && processedPhones.has(phoneCleanKey)) {
-              log(`â­ï¸ Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
+              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
               continue;
           }
           if (websiteCleanKey && processedWebsites.has(websiteCleanKey) && !isSharedPlatform(websiteCleanKey)) {
-              log(`â­ï¸ Skipping ${name} (Duplicate website: ${website})`, jobId);
+              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Duplicate website: ${website})`, jobId);
               continue;
           }
 
           // STRICT NICHE ALIGNMENT CHECK
           if (!isNicheAligned(niche, name, category, sidePaneText)) {
-              log(`â­ï¸ Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
+              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
               continue;
           }
 
@@ -898,7 +904,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
               }
               if (hasNegativePane) {
-                  log(`â­ï¸ Skipping ${name} (Negative keyword found in business category/details)`, jobId);
+                  log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Negative keyword found in business category/details)`, jobId);
                   continue;
               }
           }
@@ -931,13 +937,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           if (lead.website) {
             const workerTask = async (data) => {
               if (data.isRejected) {
-                 log(`ðŸš« Purging ${name} (Negative keyword found on their website!)`, jobId);
+                 log(`Ã°Å¸Å¡Â« Purging ${name} (Negative keyword found on their website!)`, jobId);
                  updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
                  return;
               }
 
               if (data.primary) {
-                // Store email immediately â€” no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
+                // Store email immediately Ã¢â‚¬â€ no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
                 const enriched = {
                   ...lead,
                   primary_email: data.primary,
@@ -945,7 +951,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 const scoreResult = scoreLead(enriched);
                 enriched.intent = scoreResult.intent_tag;
                 enriched.score = scoreResult.score;
-                log(`ðŸ“§ Found Email for ${name}: ${data.primary}`, jobId);
+                log(`Ã°Å¸â€œÂ§ Found Email for ${name}: ${data.primary}`, jobId);
                 updateJob(jobId, { enrichLead: enriched });
               }
             };
@@ -966,7 +972,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           const progress = Math.min(99, Math.floor(((sIdx * 100 + totalFoundInCity) / (subLocations.length * 100)) * 100));
           onProgress({ progress, city: subLoc });
 
-        } catch (err) { log(`âŒ Error: ${err.message}`, jobId); }
+        } catch (err) { log(`Ã¢ÂÅ’ Error: ${err.message}`, jobId); }
       }
       
       // Scroll to load the next batch
@@ -992,7 +998,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       }
     }
     } catch(err) {
-      log(`âŒ Sub-location ${subLoc} error: ${err.message}`, jobId);
+      log(`Ã¢ÂÅ’ Sub-location ${subLoc} error: ${err.message}`, jobId);
     } finally {
       await page.close();
     }
@@ -1001,7 +1007,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
   if (mode === 'parallel') {
       // Memory Optimization: Hard cap Maps page concurrency to 2 on 8GB RAM systems.
       const concurrency = Math.max(1, Math.min(parseInt(workerCount), 2));
-      // Use a mutex-safe counter â€” JS is single-threaded but async interleaving
+      // Use a mutex-safe counter Ã¢â‚¬â€ JS is single-threaded but async interleaving
       // can cause two coroutines to read the same index before either increments.
       let currentIdx = job.lastProcessedIndex || 0;
       const getNextIdx = () => {
@@ -1027,11 +1033,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
 
   // Wait for background enrichment workers to finish BEFORE closing browser
   if (workerPromises.size > 0) {
-      log(`â³ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
+      log(`Ã¢ÂÂ³ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
       await Promise.allSettled(Array.from(workerPromises));
   }
 
-  log(`âœ… Scan Finished. Total: ${allLeads.length}`, jobId);
+  log(`Ã¢Å“â€¦ Scan Finished. Total: ${allLeads.length}`, jobId);
   onProgress(100);
   await browser.close();
   return allLeads;
@@ -1044,7 +1050,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
   const job = getJob(jobId);
   if (!job) return [];
   
-  log(`ðŸš€ Starting Email Enrichment for ${leads.length} leads...`, jobId);
+  log(`Ã°Å¸Å¡â‚¬ Starting Email Enrichment for ${leads.length} leads...`, jobId);
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -1070,7 +1076,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
         if (getJob(jobId)?.stopFlag) return;
         
         if (data.isRejected) {
-           log(`ðŸš« Purging ${lead.business_name} (Negative keyword found on website)`, jobId);
+           log(`Ã°Å¸Å¡Â« Purging ${lead.business_name} (Negative keyword found on website)`, jobId);
            updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
            completed++;
            return;
@@ -1085,14 +1091,14 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
         const scoreResult = scoreLead(enriched);
         enriched.intent = scoreResult.intent_tag;
         enriched.score = scoreResult.score;
-        if (data.primary) log(`ðŸ“§ Found Email for ${lead.business_name}: ${data.primary}`, jobId);
+        if (data.primary) log(`Ã°Å¸â€œÂ§ Found Email for ${lead.business_name}: ${data.primary}`, jobId);
         updateJob(jobId, { enrichLead: enriched });
         completed++;
         onProgress({ progress: Math.floor((completed / leads.length) * 100), city: "Enriching Websites" });
      }, negWords);
   });
   
-  log(`âœ… Enrichment Complete. Processed: ${completed}`, jobId);
+  log(`Ã¢Å“â€¦ Enrichment Complete. Processed: ${completed}`, jobId);
   
   if (!getJob(jobId)?.stopFlag) {
     onProgress(100);
@@ -1114,7 +1120,7 @@ export async function filterLeadsByNiche(leads, niche, jobId, workerCount = 10, 
   const job = getJob(jobId);
   if (!job) return { passed: [], rejected: [] };
 
-  log(`🔍 Starting Niche Filter: "${niche}" on ${leads.length} leads...`, jobId);
+  log(`ðŸ” Starting Niche Filter: "${niche}" on ${leads.length} leads...`, jobId);
 
   const cleanNiche = niche.toLowerCase().trim();
   const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an', 'companies']);
@@ -1193,36 +1199,36 @@ export async function filterLeadsByNiche(leads, niche, jobId, workerCount = 10, 
 
       if (decision === 'reject') {
         rejected.push(lead);
-        log(`❌ Rejected (name): ${lead.business_name}`, jobId);
+        log(`âŒ Rejected (name): ${lead.business_name}`, jobId);
       } else if (decision === 'accept' && !lead.website) {
         passed.push(lead);
         updateJob(jobId, { leads: [lead] });
-        log(`✅ Accepted (name): ${lead.business_name}`, jobId);
+        log(`âœ… Accepted (name): ${lead.business_name}`, jobId);
       } else if (lead.website) {
         const text = await fetchText(lead.website);
         const confirms = textConfirmsNiche(text);
         if (decision === 'accept' || confirms) {
           passed.push(lead);
           updateJob(jobId, { leads: [lead] });
-          log(`✅ Accepted: ${lead.business_name}`, jobId);
+          log(`âœ… Accepted: ${lead.business_name}`, jobId);
         } else {
           rejected.push(lead);
-          log(`❌ Rejected (website): ${lead.business_name}`, jobId);
+          log(`âŒ Rejected (website): ${lead.business_name}`, jobId);
         }
       } else {
         rejected.push(lead);
-        log(`❌ Rejected (no signal): ${lead.business_name}`, jobId);
+        log(`âŒ Rejected (no signal): ${lead.business_name}`, jobId);
       }
     } finally {
       completed++;
-      onProgress({ progress: Math.floor((completed / leads.length) * 100), city: `Filtering: ${completed}/${leads.length} — Kept: ${passed.length}` });
+      onProgress({ progress: Math.floor((completed / leads.length) * 100), city: `Filtering: ${completed}/${leads.length} â€” Kept: ${passed.length}` });
       semRelease();
     }
   };
 
   await Promise.all(leads.map(lead => processSingle(lead)));
 
-  log(`✅ Filter Complete. Accepted: ${passed.length} | Rejected: ${rejected.length}`, jobId);
+  log(`âœ… Filter Complete. Accepted: ${passed.length} | Rejected: ${rejected.length}`, jobId);
   if (!getJob(jobId)?.stopFlag) onProgress(100);
   return { passed, rejected };
 }
