@@ -23,33 +23,59 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
   const cleanCategory = (category || '').toLowerCase();
   const cleanText = (sidePaneText || '').toLowerCase();
 
-  // 1. Restoration — home/property only, not auto/art/etc.
+  // 1. Restoration — home/property ONLY. Block all auto/vehicle/unrelated businesses.
   if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
-    const autoKeywords = [
-      'car ', 'auto ', 'vehicle', 'furniture', 'book ', 'art ', 'watch', 'pen ', 'antique',
-      'leather', 'classic car', 'engine', 'motor', 'cycle', 'collision',
-      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
+    const blockKeywords = [
+      // Auto / Vehicle — all variants
+      'auto ', 'auto-', 'automotive', 'automobile',
+      'car ', 'cars ', ' car ', 'car wash', 'car cleaning', 'car detailing',
+      'vehicle', 'truck repair', 'fleet service',
+      'towing', 'roadside', 'tire shop', 'tire repair', 'tire service',
+      'oil change', 'oil lube', 'mechanic', 'auto mechanic',
+      'auto detailing', 'detailing shop', 'mobile detailing',
+      'auto body', 'body shop', 'body work',
+      'collision repair', 'collision center', 'collision shop',
+      'transmission', 'engine repair',
+      'motorcycle', 'motorbike', 'auto cleaning',
+      // Other non-property restoration
+      'furniture restoration', 'furniture repair', 'upholstery',
+      'book restoration', 'art restoration', 'artwork',
+      'painting restoration', 'photo restoration', 'image restoration',
+      'watch repair', 'antique', 'leather restoration',
+      'dental', 'teeth whitening', 'hair salon', 'hair restoration',
+      'computer repair', 'phone repair', 'electronics repair', 'data recovery',
+      'pool restoration', 'pool cleaning', 'pool service',
+      'janitorial', 'window cleaning', 'gutter cleaning',
     ];
-    if (autoKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+    if (blockKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return false;
     }
-    // If name or category already contains a restoration keyword, accept immediately
+
+    // Strong property-restoration match → accept immediately
     const strongMatch = [
-      'water damage', 'fire damage', 'mold', 'remediation', 'restoration',
-      'flood', 'emergency service', 'mitigation', 'disaster'
+      'water damage', 'fire damage', 'mold', 'mould', 'remediation', 'restoration',
+      'flood', 'emergency service', 'mitigation', 'disaster', 'sewage',
+      'biohazard', 'smoke damage', 'storm damage', 'contents cleaning',
+      'structural drying', 'dehumidif', 'iicrc'
     ];
     if (strongMatch.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return true;
     }
-    // Looser fallback — sidePaneText may contain the keyword even if name doesn't
-    const allowed = [
-      'cleanup', 'contractor', 'construction', 'builder', 'renovation',
-      'roofing', 'plumbing', 'damage', 'carpet cleaning', 'dryer vent'
+
+    // Tighter fallback — ONLY property/construction specific terms in pane text
+    const propertyAllowed = [
+      'water damage', 'fire damage', 'flood damage', 'storm damage',
+      'mold removal', 'mold remediation', 'sewage backup', 'biohazard',
+      'mitigation', 'disaster restoration', 'emergency restoration',
+      'structural repair', 'property damage', 'home restoration',
+      'dehumidif', 'moisture damage', 'drywall repair',
+      'general contractor', 'renovation contractor', 'construction company'
     ];
-    if (cleanText.length > 0 && allowed.some(kw => cleanText.includes(kw))) {
+    if (cleanText.length > 0 && propertyAllowed.some(kw => cleanText.includes(kw))) {
       return true;
     }
-    // If sidePaneText is empty (not yet loaded), give the lead the benefit of the doubt
+
+    // sidePaneText not loaded yet — give benefit of the doubt
     if (!cleanText) return true;
     return false;
   }
