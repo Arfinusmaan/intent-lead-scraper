@@ -1,4 +1,4 @@
-﻿import { chromium } from "playwright-extra";
+import { chromium } from "playwright-extra";
 import stealthPlugin from "puppeteer-extra-plugin-stealth";
 chromium.use(stealthPlugin());
 
@@ -17,324 +17,86 @@ function isSharedPlatform(domain) {
   return shared.some(s => domain.includes(s));
 }
 
-// =========================
-// NICHE ALIGNMENT ENGINE
-// =========================
-// Each niche config defines:
-//   strongMatch  Ã¢â‚¬â€ keywords that CONFIRM the lead belongs to this niche (checked in name + category first)
-//   exclusions   Ã¢â‚¬â€ keywords that REJECT the lead regardless (checked in name + category)
-//   textFallback Ã¢â‚¬â€ keywords that can confirm the lead if name/category have no strong match
-//                  but the side pane text mentions them (weaker signal)
-// Logic:
-//   1. If name or category hits an exclusion Ã¢â€ â€™ REJECT
-//   2. If name or category hits a strongMatch Ã¢â€ â€™ ACCEPT
-//   3. If sidePaneText hits a textFallback AND no exclusion Ã¢â€ â€™ ACCEPT
-//   4. If none of the above match Ã¢â€ â€™ REJECT (strict mode)
-
-const NICHE_CONFIGS = [
-  {
-    // Water/fire/mold restoration Ã¢â‚¬â€ home & property ONLY
-    test: n => n.includes('restoration') || n.includes('water damage') || n.includes('fire damage') || n.includes('mold') || n.includes('remediation'),
-    // If the Google Maps CATEGORY explicitly says one of these Ã¢â€ â€™ hard reject (not restoration)
-    categoryExclusions: [
-      'plumber', 'plumbing', 'roofing', 'roofer', 'electrician', 'electrical',
-      'painter', 'painting contractor', 'landscaping', 'lawn care', 'tree service',
-      'auto body', 'auto repair', 'car dealership', 'pest control', 'hvac',
-      'general contractor', 'handyman', 'cleaning service', 'pressure washing',
-      'church', 'place of worship', 'counselor', 'therapist', 'antique store', 
-      'furniture repair', 'museum', 'historical place'
-    ],
-    exclusions: [
-      'auto restoration', 'car restoration', 'auto body', 'vehicle restoration',
-      'furniture restoration', 'art restoration', 'book restoration', 'watch restoration',
-      'antique restoration', 'leather restoration', 'classic car', 'auto repair',
-      'body shop', 'transmission', 'upholstery', 'collision', 'dental', 'teeth whitening',
-      'hair restoration', 'motor restoration', 'cycle restoration', 'pen restoration',
-      'church', 'ministry', 'worship', 'counseling', 'counselling', 'therapy', 'counsel',
-      'christian', 'bible', 'pinball', 'arcade', 'toy', 'antique', 'furniture', 'upholstery',
-      'art', 'photo', 'photography', 'clock', 'watch', 'dental', 'hair', 'spa', 'recycling',
-      'reclamation', 'heritage', 'society', 'historical'
-    ],
-    strongMatch: [
-      'water damage', 'fire damage', 'mold', 'mould', 'remediation',
-      'flood', 'mitigation', 'disaster recovery', 'smoke damage', 'sewage',
-      'biohazard', 'dehumidification', 'drying'
-    ],
-    // Only accept via textFallback if explicitly mentions restoration services
-    textFallback: [
-      'water damage restoration', 'fire damage restoration', 'mold remediation',
-      'flood restoration', 'emergency restoration', 'property restoration',
-      'disaster restoration', 'smoke damage restoration'
-    ]
-  },
-  {
-    // Med Spa / Medical Aesthetics
-    test: n => n.includes('med spa') || n.includes('medspa') || n.includes('medical spa') || n.includes('aesthetic'),
-    categoryExclusions: [
-      'massage therapist', 'thai massage', 'foot massage', 'nail salon',
-      'hair salon', 'barber shop', 'chiropractor', 'gym', 'fitness center'
-    ],
-    exclusions: [
-      'massage parlour', 'massage therapist', 'thai massage', 'foot massage',
-      'reflexology', 'nail salon', 'hair salon', 'barber', 'chiropractor', 'spa hotel'
-    ],
-    strongMatch: [
-      'med spa', 'medspa', 'medical spa', 'aesthetic', 'aesthetics', 'botox',
-      'filler', 'laser', 'dermatology', 'plastic surgery', 'skin clinic',
-      'cosmetic', 'iv therapy', 'weight loss clinic', 'hormone', 'wellness clinic'
-    ],
-    textFallback: [
-      'botox treatment', 'dermal filler', 'laser treatment', 'skin rejuvenation', 'coolsculpting',
-      'chemical peel', 'microneedling', 'aesthetic treatment', 'medical aesthetics'
-    ]
-  },
-  {
-    // Roofing
-    test: n => n.includes('roofing') || n.includes('roofer') || n.includes('roof repair'),
-    categoryExclusions: [
-      'plumber', 'plumbing', 'electrician', 'general contractor', 'restoration',
-      'auto body', 'restaurant', 'bar', 'hotel', 'lounge'
-    ],
-    exclusions: [
-      'roof bar', 'rooftop bar', 'rooftop restaurant', 'rooftop lounge', 'roof top',
-      'hotel rooftop', 'rooftop event'
-    ],
-    strongMatch: [
-      'roofing', 'roofer', 'roof repair', 'roof replacement', 'shingle', 'gutter',
-      'skylight', 'flat roof', 'metal roof', 'roof contractor', 'roof installation'
-    ],
-    textFallback: [
-      'roof repair', 'roof replacement', 'shingle installation', 'roofing contractor',
-      'gutter installation', 'roof inspection'
-    ]
-  },
-  {
-    // Plumbing
-    test: n => n.includes('plumbing') || n.includes('plumber'),
-    categoryExclusions: [
-      'roofing', 'electrician', 'restoration', 'auto body', 'hvac'
-    ],
-    exclusions: [
-      'auto plumbing', 'plumbing supplies store', 'plumbing wholesale'
-    ],
-    strongMatch: [
-      'plumbing', 'plumber', 'pipe repair', 'drain', 'sewer', 'water heater',
-      'leak repair', 'faucet', 'toilet repair', 'hydro jetting'
-    ],
-    textFallback: [
-      'plumbing service', 'drain cleaning', 'pipe repair', 'water heater installation',
-      'sewer repair', 'leak detection'
-    ]
-  },
-  {
-    // HVAC / Air Conditioning / Heating
-    test: n => n.includes('hvac') || n.includes('air conditioning') || n.includes('heating') || n.includes('cooling'),
-    categoryExclusions: [
-      'plumber', 'electrician', 'roofing', 'auto repair', 'auto body'
-    ],
-    exclusions: [
-      'auto air conditioning', 'car ac', 'vehicle hvac', 'automotive heating'
-    ],
-    strongMatch: [
-      'hvac', 'air conditioning', 'heating', 'cooling', 'furnace', 'heat pump',
-      'ac repair', 'ductwork', 'ventilation', 'boiler', 'thermostat'
-    ],
-    textFallback: [
-      'hvac service', 'air conditioning repair', 'furnace installation', 'heat pump service',
-      'duct cleaning', 'boiler repair'
-    ]
-  },
-  {
-    // Pest Control
-    test: n => n.includes('pest') || n.includes('exterminator') || n.includes('termite') || n.includes('rodent'),
-    categoryExclusions: [],
-    exclusions: [],
-    strongMatch: [
-      'pest control', 'exterminator', 'termite', 'rodent', 'bed bug', 'ant control',
-      'mosquito', 'wildlife removal', 'fumigation', 'pest management'
-    ],
-    textFallback: [
-      'pest control service', 'termite treatment', 'rodent extermination', 'bed bug treatment',
-      'ant extermination', 'fumigation service'
-    ]
-  },
-  {
-    // Landscaping / Lawn Care
-    test: n => n.includes('landscap') || n.includes('lawn') || n.includes('lawn care') || n.includes('tree service'),
-    categoryExclusions: [
-      'restaurant', 'hotel', 'auto body', 'plumber', 'roofing'
-    ],
-    exclusions: [
-      'landscape painting', 'landscape photography', 'landscape art'
-    ],
-    strongMatch: [
-      'landscaping', 'lawn care', 'lawn service', 'tree service', 'tree removal',
-      'lawn mowing', 'irrigation', 'sod', 'hardscape', 'garden', 'turf'
-    ],
-    textFallback: [
-      'lawn mowing service', 'tree trimming', 'landscaping service', 'garden maintenance',
-      'irrigation system', 'sod installation'
-    ]
-  },
-  {
-    // Cleaning Services
-    test: n => n.includes('cleaning') || n.includes('janitorial') || n.includes('maid') || n.includes('housekeeping'),
-    categoryExclusions: [
-      'car wash', 'auto detailing', 'dry cleaner', 'laundry'
-    ],
-    exclusions: [
-      'auto cleaning', 'car cleaning', 'car wash', 'vehicle detailing', 'window tinting'
-    ],
-    strongMatch: [
-      'cleaning service', 'janitorial', 'maid service', 'house cleaning', 'office cleaning',
-      'carpet cleaning', 'pressure washing', 'window cleaning', 'deep cleaning', 'disinfection'
-    ],
-    textFallback: [
-      'house cleaning service', 'office cleaning', 'carpet cleaning', 'deep cleaning', 'janitorial service',
-      'move out cleaning', 'commercial cleaning'
-    ]
-  },
-  {
-    // General Contracting / Remodeling
-    test: n => n.includes('contractor') || n.includes('remodel') || n.includes('renovation') || n.includes('construction'),
-    categoryExclusions: [
-      'auto body', 'car repair', 'vehicle repair', 'marine', 'oil', 'restaurant', 'hotel'
-    ],
-    exclusions: [
-      'auto body', 'car repair', 'vehicle repair', 'marine construction', 'oil rig'
-    ],
-    strongMatch: [
-      'general contractor', 'remodeling', 'renovation', 'home improvement', 'construction',
-      'bathroom remodel', 'kitchen remodel', 'additions', 'deck', 'basement finishing'
-    ],
-    textFallback: [
-      'home renovation', 'general contracting', 'bathroom remodel', 'kitchen remodel',
-      'home addition', 'deck installation', 'basement finishing'
-    ]
-  },
-  {
-    // Electrical
-    test: n => n.includes('electric') || n.includes('electrician'),
-    categoryExclusions: [
-      'plumber', 'roofing', 'auto body', 'electronics store', 'car dealership'
-    ],
-    exclusions: [
-      'electric car', 'electric vehicle', 'electric bike', 'electric scooter', 'electronics store'
-    ],
-    strongMatch: [
-      'electrician', 'electrical contractor', 'electrical service', 'wiring', 'panel upgrade',
-      'generator', 'ev charger installation', 'lighting installation', 'electrical repair'
-    ],
-    textFallback: [
-      'electrical repair', 'panel upgrade', 'wiring service', 'generator installation',
-      'lighting installation', 'electrician service'
-    ]
-  },
-  {
-    // Painting
-    test: n => n.includes('painting') || n.includes('painter'),
-    categoryExclusions: [
-      'auto body', 'car dealership', 'art gallery', 'nail salon'
-    ],
-    exclusions: [
-      'auto painting', 'car painting', 'body paint', 'vehicle painting', 'art painting',
-      'face painting', 'nail painting', 'painting class', 'painting studio'
-    ],
-    strongMatch: [
-      'house painting', 'interior painting', 'exterior painting', 'commercial painting',
-      'residential painter', 'painting contractor', 'wall painting', 'cabinet painting'
-    ],
-    textFallback: [
-      'interior painting', 'exterior painting', 'house painting', 'commercial painting',
-      'painting contractor', 'cabinet refinishing'
-    ]
-  }
-];
-
-// Helper Ã¢â‚¬â€ check if category matches a list of exclusion patterns
-function categoryMatchesExclusion(category, exclusionList) {
-  const cat = category.toLowerCase().trim();
-  if (!cat) return false;
-  return exclusionList.some(ex => cat.includes(ex));
-}
-
 function isNicheAligned(niche, businessName, category, sidePaneText) {
   const cleanNiche = niche.toLowerCase().trim();
   const cleanName = businessName.toLowerCase();
   const cleanCategory = (category || '').toLowerCase();
   const cleanText = (sidePaneText || '').toLowerCase();
 
-  // Find the first matching niche config
-  const config = NICHE_CONFIGS.find(c => c.test(cleanNiche));
-
-  if (config) {
-    // Step 0: Reject if the Google Maps CATEGORY explicitly belongs to a different trade
-    // This is the strongest signal Ã¢â‚¬â€ Google Maps category = what the business actually IS
-    if (config.categoryExclusions && cleanCategory) {
-      if (categoryMatchesExclusion(cleanCategory, config.categoryExclusions)) {
-        return false;
-      }
-    }
-
-    // Step 1: Reject if any exclusion keyword matches the name or category
-    for (const excl of config.exclusions) {
-      if (cleanName.includes(excl) || cleanCategory.includes(excl)) {
-        return false;
-      }
-    }
-
-    // Step 2: Accept if name or category contains a strong match keyword
-    for (const sm of config.strongMatch) {
-      if (cleanName.includes(sm) || cleanCategory.includes(sm)) {
-        return true;
-      }
-    }
-
-    // Step 3: Accept if side pane text contains a specific textFallback phrase
-    // (multi-word phrases only Ã¢â‚¬â€ avoids single-word false positives)
-    if (cleanText) {
-      for (const fb of config.textFallback) {
-        if (cleanText.includes(fb)) {
-          return true;
-        }
-      }
-      // All checks failed and we have pane text to judge from Ã¢â€ â€™ REJECT
+  // 1. Restoration — home/property only, not auto/art/etc.
+  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
+    const autoKeywords = [
+      'car ', 'auto ', 'vehicle', 'furniture', 'book ', 'art ', 'watch', 'pen ', 'antique',
+      'leather', 'classic car', 'engine', 'motor', 'cycle', 'collision',
+      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
+    ];
+    if (autoKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return false;
     }
+    // If name or category already contains a restoration keyword, accept immediately
+    const strongMatch = [
+      'water damage', 'fire damage', 'mold', 'remediation', 'restoration',
+      'flood', 'emergency service', 'mitigation', 'disaster'
+    ];
+    if (strongMatch.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+      return true;
+    }
+    // Looser fallback — sidePaneText may contain the keyword even if name doesn't
+    const allowed = [
+      'cleanup', 'contractor', 'construction', 'builder', 'renovation',
+      'roofing', 'plumbing', 'damage', 'carpet cleaning', 'dryer vent'
+    ];
+    if (cleanText.length > 0 && allowed.some(kw => cleanText.includes(kw))) {
+      return true;
+    }
+    // If sidePaneText is empty (not yet loaded), give the lead the benefit of the doubt
+    if (!cleanText) return true;
+    return false;
+  }
 
-    // Step 4: No pane text loaded yet Ã¢â€ â€™ give benefit of the doubt (will be re-checked later)
+  // 2. Med Spa
+  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
+    const disallowed = [
+      'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology',
+      'nail salon', 'hair salon', 'barber', 'chiropractor'
+    ];
+    if (disallowed.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
+      return false;
+    }
+    if (cleanCategory.includes('massage') || cleanName.includes('massage')) {
+      const medicalTerms = ['medical', 'med', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin'];
+      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term))) {
+        return false;
+      }
+    }
     return true;
   }
 
-  // Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Fallback for unconfigured niches Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
-  // Require the niche words to appear in the business NAME or CATEGORY.
-  // Matching only in sidePaneText is too loose Ã¢â‚¬â€ every page mentions related services.
+  // 3. Roofing
+  if (cleanNiche.includes('roofing') || cleanNiche.includes('roofer')) {
+    const disallowed = ['roof bar', 'restaurant', 'hotel', 'lounge', 'rooftop', 'roof top'];
+    if (disallowed.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+      return false;
+    }
+    return true;
+  }
+
+  // 4. General fallback — match any niche word in name, category, OR pane text
   const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an']);
   const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
 
   if (nicheWords.length > 0) {
-    // Primary: must match in name or category
-    const primaryMatch = nicheWords.some(w => cleanName.includes(w) || cleanCategory.includes(w));
-    if (primaryMatch) return true;
-
-    // Secondary: allow pane text match only if no category was found (Google Maps didn't load it yet)
-    if (!cleanCategory && cleanText) {
-      return nicheWords.some(w => cleanText.includes(w));
-    }
-
-    // Category exists but no match found Ã¢â€ â€™ reject
-    if (cleanCategory) return false;
-
-    // Neither category nor pane text available Ã¢â€ â€™ benefit of the doubt
-    if (!cleanText) return true;
-
-    return false;
+    const matched = nicheWords.some(w =>
+      cleanName.includes(w) || cleanCategory.includes(w) || cleanText.includes(w)
+    );
+    // If sidePaneText is empty, only check name/category — don't reject solely because text is missing
+    if (!matched && cleanText) return false;
   }
 
   return true;
 }
 
-// Normalize phone numbers Ã¢â‚¬â€ strip everything except digits and leading +
+// Normalize phone numbers — strip everything except digits and leading +
 function cleanPhone(phone) {
   if (!phone) return '';
   const digits = phone.replace(/\D/g, '');
@@ -363,7 +125,7 @@ class WebsiteWorkerPool {
     this.activeWorkers++;
     try {
       const result = await this.extract(website, negWords);
-      await callback(result); // await Ã¢â‚¬â€ callback is async (calls extractDecisionMaker)
+      await callback(result); // await — callback is async (calls extractDecisionMaker)
     } finally {
       this.activeWorkers--;
       if (this.queue.length > 0) {
@@ -377,7 +139,6 @@ class WebsiteWorkerPool {
     if (!website) return { primary: "", secondary: [] };
     
     let emails = [];
-    let allText = ''; // accumulate text from all visited pages for niche filter
     const cleanWeb = website.replace(/\/$/, '');
     
     const isValidEmail = (email) => {
@@ -437,7 +198,7 @@ class WebsiteWorkerPool {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
         const url = route.request().url();
-        // Block heavy/decorative resources Ã¢â‚¬â€ scripts needed for modern sites
+        // Block heavy/decorative resources — scripts needed for modern sites
         if (['image', 'media', 'font'].includes(type)) return route.abort();
         // Block icon/analytics CDNs that add zero value
         if (url.includes('googletagmanager') || url.includes('google-analytics') ||
@@ -458,7 +219,6 @@ class WebsiteWorkerPool {
       
       const html = await homePage.content();
       const text = await homePage.evaluate(() => document.body?.innerText || '');
-      allText += ' ' + text;
       
       let isRejected = false;
       if (negWords && negWords.length > 0) {
@@ -494,7 +254,7 @@ class WebsiteWorkerPool {
           }
       }
     } catch (e) {
-      // Silently continue Ã¢â‚¬â€ page may have failed but we move on
+      // Silently continue — page may have failed but we move on
     } finally {
       if (homePage) await homePage.close().catch(() => {});
     }
@@ -509,7 +269,6 @@ class WebsiteWorkerPool {
             await blockRoute(p);
             await p.goto(url, { timeout: 6000, waitUntil: "domcontentloaded" });
             const pText = await p.evaluate(() => document.body?.innerText || '');
-            allText += ' ' + pText;
             const pHtml = await p.content();
             const pEmails = [
               ...[...pText.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-z]{2,}/g)].map(m => m[0].toLowerCase()),
@@ -527,7 +286,7 @@ class WebsiteWorkerPool {
     const priority = ["contact@", "info@", "hello@", "support@"];
     let primary = emails.find(e => priority.some(p => e.startsWith(p))) || emails[0] || "";
     
-    return { primary, secondary: emails.filter(e => e !== primary), _rawText: allText };
+    return { primary, secondary: emails.filter(e => e !== primary) };
   }
 }
 
@@ -583,7 +342,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     
     try {
       const query = `${niche} in ${subLoc}`;
-      log(`Ã°Å¸Å¡â‚¬ Searching: ${query}`, jobId);
+      log(`🚀 Searching: ${query}`, jobId);
       await page.goto(`https://www.google.com/maps/search/${encodeURIComponent(query)}`, { waitUntil: 'domcontentloaded', timeout: 30000 });
       
       // =========================
@@ -591,14 +350,14 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       // =========================
       const pageText = await page.content();
       if (pageText.includes('action="CaptchaRedirect"') || pageText.includes('Our systems have detected unusual traffic')) {
-          log(`Ã°Å¸â€ºâ€˜ CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
+          log(`🛑 CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
           setPauseFlag(jobId, true);
           updateJob(jobId, { currentCity: "PAUSED: Captcha Action Required" });
           // Wait safely until the user manually hits 'Resume'
           while (getJob(jobId)?.pauseFlag) {
              await new Promise(r => setTimeout(r, 2000));
           }
-          log(`Ã¢â€“Â¶Ã¯Â¸Â Engine Resumed after Captcha!`, jobId);
+          log(`▶️ Engine Resumed after Captcha!`, jobId);
           // Refresh the page now that it's solved
           await page.reload({ waitUntil: 'domcontentloaded' });
       }
@@ -651,14 +410,14 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               }
 
               if (hasNegative) {
-                  log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Negative keyword match in name)`, jobId);
+                  log(`⏭️ Skipping ${name} (Negative keyword match in name)`, jobId);
                   continue;
               }
               
               // Built-in heuristics for pure Massage Spas if looking for Med Spas
               if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa')) {
                   if (lowerName.includes('massage') && !lowerName.match(/med|medical|aesthetic|laser|clinic|beauty/)) {
-                      log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
+                      log(`⏭️ Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
                       continue;
                   }
               }
@@ -668,7 +427,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               totalFoundInCity++;
 
               try {
-                  log(`Ã°Å¸â€˜â€° Clicking: ${name}`, jobId);
+                  log(`👉 Clicking: ${name}`, jobId);
                   const safeName = name.replace(/"/g, '\\"');
                   let targetItem = feedLocator.locator(`a[aria-label="${safeName}"]`).first();
                   
@@ -676,7 +435,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                       // Fallback: If label vanished from virtual DOM, grab directly by index
                       targetItem = listings.nth(i);
                       if (await targetItem.count() === 0) {
-                          log(`Ã¢Å¡Â Ã¯Â¸Â Element vanished entirely, skipping.`, jobId);
+                          log(`⚠️ Element vanished entirely, skipping.`, jobId);
                           continue;
                       }
                   }
@@ -706,7 +465,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
 
-              // Broader selector set Ã¢â‚¬â€ Google Maps changes class names frequently
+              // Broader selector set — Google Maps changes class names frequently
               const paneTitle = await page.evaluate(() => {
                   // Try known class names first, then fall back to any visible h1 inside the detail pane
                   const selectors = [
@@ -746,7 +505,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               await page.waitForTimeout(200);
           }
           if (!paneFound) {
-              log(`Ã¢Å¡Â Ã¯Â¸Â Timeout loading pane for ${name}, Skipping.`, jobId);
+              log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
               continue;
           }
           
@@ -791,7 +550,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               const addrClean = (address || '').trim();
 
               // Only consider stale if BOTH phone AND website match the previous lead
-              // (address alone is too unreliable Ã¢â‚¬â€ offices share buildings)
+              // (address alone is too unreliable — offices share buildings)
               const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
               const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
 
@@ -817,7 +576,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 category = await sidePane.locator('button.D75GSc').first().textContent({ timeout: 300 }).catch(() => "");
             }
             if (!category) {
-                const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*Ã‚Â·\s*([^Ã‚Â·\n\r\t]+)/i);
+                const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*·\s*([^·\n\r\t]+)/i);
                 if (match) {
                     category = match[1].trim();
                 }
@@ -868,28 +627,28 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           const websiteCleanKey = website ? website.toLowerCase().trim().replace('www.', '') : '';
 
           if (!cleanPhoneNum && !website) {
-              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (No Phone/Web)`, jobId);
+              log(`⏭️ Skipping ${name} (No Phone/Web)`, jobId);
               continue;
           }
 
           if (website && website.includes('google.com')) {
-               log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping Google Link for ${name}`, jobId);
+               log(`⏭️ Skipping Google Link for ${name}`, jobId);
                continue;
           }
 
           // Check Job-Level duplicates before proceeding
           if (phoneCleanKey && processedPhones.has(phoneCleanKey)) {
-              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
+              log(`⏭️ Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
               continue;
           }
           if (websiteCleanKey && processedWebsites.has(websiteCleanKey) && !isSharedPlatform(websiteCleanKey)) {
-              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Duplicate website: ${website})`, jobId);
+              log(`⏭️ Skipping ${name} (Duplicate website: ${website})`, jobId);
               continue;
           }
 
           // STRICT NICHE ALIGNMENT CHECK
           if (!isNicheAligned(niche, name, category, sidePaneText)) {
-              log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
+              log(`⏭️ Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
               continue;
           }
 
@@ -904,7 +663,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
               }
               if (hasNegativePane) {
-                  log(`Ã¢ÂÂ­Ã¯Â¸Â Skipping ${name} (Negative keyword found in business category/details)`, jobId);
+                  log(`⏭️ Skipping ${name} (Negative keyword found in business category/details)`, jobId);
                   continue;
               }
           }
@@ -937,13 +696,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           if (lead.website) {
             const workerTask = async (data) => {
               if (data.isRejected) {
-                 log(`Ã°Å¸Å¡Â« Purging ${name} (Negative keyword found on their website!)`, jobId);
+                 log(`🚫 Purging ${name} (Negative keyword found on their website!)`, jobId);
                  updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
                  return;
               }
 
               if (data.primary) {
-                // Store email immediately Ã¢â‚¬â€ no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
+                // Store email immediately — no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
                 const enriched = {
                   ...lead,
                   primary_email: data.primary,
@@ -951,7 +710,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 const scoreResult = scoreLead(enriched);
                 enriched.intent = scoreResult.intent_tag;
                 enriched.score = scoreResult.score;
-                log(`Ã°Å¸â€œÂ§ Found Email for ${name}: ${data.primary}`, jobId);
+                log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
                 updateJob(jobId, { enrichLead: enriched });
               }
             };
@@ -972,7 +731,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           const progress = Math.min(99, Math.floor(((sIdx * 100 + totalFoundInCity) / (subLocations.length * 100)) * 100));
           onProgress({ progress, city: subLoc });
 
-        } catch (err) { log(`Ã¢ÂÅ’ Error: ${err.message}`, jobId); }
+        } catch (err) { log(`❌ Error: ${err.message}`, jobId); }
       }
       
       // Scroll to load the next batch
@@ -998,7 +757,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       }
     }
     } catch(err) {
-      log(`Ã¢ÂÅ’ Sub-location ${subLoc} error: ${err.message}`, jobId);
+      log(`❌ Sub-location ${subLoc} error: ${err.message}`, jobId);
     } finally {
       await page.close();
     }
@@ -1007,7 +766,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
   if (mode === 'parallel') {
       // Memory Optimization: Hard cap Maps page concurrency to 2 on 8GB RAM systems.
       const concurrency = Math.max(1, Math.min(parseInt(workerCount), 2));
-      // Use a mutex-safe counter Ã¢â‚¬â€ JS is single-threaded but async interleaving
+      // Use a mutex-safe counter — JS is single-threaded but async interleaving
       // can cause two coroutines to read the same index before either increments.
       let currentIdx = job.lastProcessedIndex || 0;
       const getNextIdx = () => {
@@ -1033,11 +792,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
 
   // Wait for background enrichment workers to finish BEFORE closing browser
   if (workerPromises.size > 0) {
-      log(`Ã¢ÂÂ³ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
+      log(`⏳ Waiting for ${workerPromises.size} background email enrichment tasks to finish...`, jobId);
       await Promise.allSettled(Array.from(workerPromises));
   }
 
-  log(`Ã¢Å“â€¦ Scan Finished. Total: ${allLeads.length}`, jobId);
+  log(`✅ Scan Finished. Total: ${allLeads.length}`, jobId);
   onProgress(100);
   await browser.close();
   return allLeads;
@@ -1050,7 +809,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
   const job = getJob(jobId);
   if (!job) return [];
   
-  log(`Ã°Å¸Å¡â‚¬ Starting Email Enrichment for ${leads.length} leads...`, jobId);
+  log(`🚀 Starting Email Enrichment for ${leads.length} leads...`, jobId);
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
@@ -1076,7 +835,7 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
         if (getJob(jobId)?.stopFlag) return;
         
         if (data.isRejected) {
-           log(`Ã°Å¸Å¡Â« Purging ${lead.business_name} (Negative keyword found on website)`, jobId);
+           log(`🚫 Purging ${lead.business_name} (Negative keyword found on website)`, jobId);
            updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
            completed++;
            return;
@@ -1091,14 +850,14 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
         const scoreResult = scoreLead(enriched);
         enriched.intent = scoreResult.intent_tag;
         enriched.score = scoreResult.score;
-        if (data.primary) log(`Ã°Å¸â€œÂ§ Found Email for ${lead.business_name}: ${data.primary}`, jobId);
+        if (data.primary) log(`📧 Found Email for ${lead.business_name}: ${data.primary}`, jobId);
         updateJob(jobId, { enrichLead: enriched });
         completed++;
         onProgress({ progress: Math.floor((completed / leads.length) * 100), city: "Enriching Websites" });
      }, negWords);
   });
   
-  log(`Ã¢Å“â€¦ Enrichment Complete. Processed: ${completed}`, jobId);
+  log(`✅ Enrichment Complete. Processed: ${completed}`, jobId);
   
   if (!getJob(jobId)?.stopFlag) {
     onProgress(100);
@@ -1106,129 +865,4 @@ export async function enrichCSVList(leads, jobId, workerCount = 3, negativeKeywo
   
   await browser.close();
   return leads;
-}
-
-// =========================
-// CSV NICHE FILTER ENGINE
-// =========================
-// Takes a list of CSV leads + a niche string.
-// For each lead:
-//   1. Check business name against niche (fast, no browser)
-//   2. If the lead has a website, visit it and check page content for niche keywords
-//   3. Only pass leads that CONFIRM the niche
-export async function filterLeadsByNiche(leads, niche, jobId, workerCount = 10, onProgress = () => {}) {
-  const job = getJob(jobId);
-  if (!job) return { passed: [], rejected: [] };
-
-  log(`ðŸ” Starting Niche Filter: "${niche}" on ${leads.length} leads...`, jobId);
-
-  const cleanNiche = niche.toLowerCase().trim();
-  const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an', 'companies']);
-  const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
-  const config = NICHE_CONFIGS.find(c => c.test(cleanNiche));
-
-  const maxConcurrent = Math.max(1, Math.min(parseInt(workerCount) || 10, 25));
-  let slots = maxConcurrent;
-  const waitQueue = [];
-  const semAcquire = () => new Promise(resolve => {
-    if (slots > 0) { slots--; resolve(); }
-    else waitQueue.push(resolve);
-  });
-  const semRelease = () => {
-    if (waitQueue.length > 0) { waitQueue.shift()(); }
-    else slots++;
-  };
-
-  async function fetchText(url) {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch(url, {
-        signal: controller.signal,
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
-          'Accept': 'text/html,application/xhtml+xml,*/*;q=0.8',
-        },
-        redirect: 'follow',
-      });
-      clearTimeout(timer);
-      const html = await res.text();
-      return html
-        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/&amp;/g, '&').replace(/&nbsp;/g, ' ')
-        .replace(/\s+/g, ' ')
-        .toLowerCase();
-    } catch { return ''; }
-  }
-
-  const quickCheck = (lead) => {
-    const name = (lead.business_name || '').toLowerCase();
-    const cat  = (lead.category || '').toLowerCase();
-    if (config) {
-      if (config.categoryExclusions && cat && categoryMatchesExclusion(cat, config.categoryExclusions)) return 'reject';
-      for (const excl of config.exclusions) { if (name.includes(excl) || cat.includes(excl)) return 'reject'; }
-      for (const sm of config.strongMatch) { if (name.includes(sm)) return 'accept'; }
-      return 'needs_website';
-    }
-    if (nicheWords.some(w => name.includes(w))) return 'accept';
-    return 'needs_website';
-  };
-
-  const textConfirmsNiche = (text) => {
-    if (!text) return false;
-    if (config) {
-      const hasFallback = config.textFallback.some(fb => text.includes(fb));
-      const hasStrong   = config.strongMatch.some(sm => text.includes(sm));
-      const hasExcluded = config.categoryExclusions.some(ex => text.includes(ex));
-      return (hasFallback || hasStrong) && !hasExcluded;
-    }
-    return nicheWords.some(w => text.includes(w));
-  };
-
-  const passed = [];
-  const rejected = [];
-  let completed = 0;
-
-  const processSingle = async (lead) => {
-    await semAcquire();
-    try {
-      if (getJob(jobId)?.stopFlag) return;
-      const decision = quickCheck(lead);
-
-      if (decision === 'reject') {
-        rejected.push(lead);
-        log(`âŒ Rejected (name): ${lead.business_name}`, jobId);
-      } else if (decision === 'accept' && !lead.website) {
-        passed.push(lead);
-        updateJob(jobId, { leads: [lead] });
-        log(`âœ… Accepted (name): ${lead.business_name}`, jobId);
-      } else if (lead.website) {
-        const text = await fetchText(lead.website);
-        const confirms = textConfirmsNiche(text);
-        if (decision === 'accept' || confirms) {
-          passed.push(lead);
-          updateJob(jobId, { leads: [lead] });
-          log(`âœ… Accepted: ${lead.business_name}`, jobId);
-        } else {
-          rejected.push(lead);
-          log(`âŒ Rejected (website): ${lead.business_name}`, jobId);
-        }
-      } else {
-        rejected.push(lead);
-        log(`âŒ Rejected (no signal): ${lead.business_name}`, jobId);
-      }
-    } finally {
-      completed++;
-      onProgress({ progress: Math.floor((completed / leads.length) * 100), city: `Filtering: ${completed}/${leads.length} â€” Kept: ${passed.length}` });
-      semRelease();
-    }
-  };
-
-  await Promise.all(leads.map(lead => processSingle(lead)));
-
-  log(`âœ… Filter Complete. Accepted: ${passed.length} | Rejected: ${rejected.length}`, jobId);
-  if (!getJob(jobId)?.stopFlag) onProgress(100);
-  return { passed, rejected };
 }

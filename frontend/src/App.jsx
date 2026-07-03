@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark, Upload } from "lucide-react";
+import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -19,12 +19,6 @@ export default function App() {
   const [workers, setWorkers] = useState(3);
   const [uploadLoading, setUploadLoading] = useState(false);
   
-  const [filterJobId, setFilterJobId] = useState("");
-  const [filterJob, setFilterJob] = useState(null);
-  const [filterLoading, setFilterLoading] = useState(false);
-  const [filterNiche, setFilterNiche] = useState("");
-  const [filterWorkers, setFilterWorkers] = useState(10);
-
   const [history, setHistory] = useState([]);
   const [downloading, setDownloading] = useState(null);
   const [toast, setToast] = useState(null);
@@ -92,57 +86,11 @@ export default function App() {
     } catch {}
   };
 
-  const filterCSV = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    if (!filterNiche.trim()) {
-      showToast('Please enter a niche keyword first!', 'error');
-      e.target.value = null;
-      return;
-    }
-    setFilterLoading(true);
-    setFilterJob(null);
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('niche', filterNiche.trim());
-    formData.append('workers', filterWorkers);
-    try {
-      const res = await fetch('http://localhost:3001/filter-csv', {
-        method: 'POST',
-        body: formData,
-      });
-      const data = await res.json();
-      if (data.error) { showToast(`❌ ${data.error}`, 'error'); return; }
-      setFilterJobId(data.jobId);
-    } catch (err) {
-      showToast(`❌ Upload failed: ${err.message}`, 'error');
-    } finally {
-      setFilterLoading(false);
-      e.target.value = null;
-    }
-  };
-
   useEffect(() => {
     if (page === "history") fetchHistory();
   }, [page]);
 
-  // Poll filter job
-  useEffect(() => {
-    if (!filterJobId) return;
-    const poll = setInterval(async () => {
-      try {
-        const res = await fetch(`http://localhost:3001/results/${filterJobId}`);
-        const data = await res.json();
-        setFilterJob(data);
-        if (data.status === 'completed' || data.status === 'cancelled' || data.status === 'failed') {
-          clearInterval(poll);
-        }
-      } catch {}
-    }, 1500);
-    return () => clearInterval(poll);
-  }, [filterJobId]);
-
-  // Auto-notify when job completes
+  // Notify when job completes
   useEffect(() => {
     if (job?.status === 'completed' || job?.status === 'cancelled') {
       setCompletedBanner(true);
@@ -150,7 +98,7 @@ export default function App() {
     }
   }, [job?.status]);
 
-  // Proper fetch-based CSV download — shows real errors instead of a blank tab
+  // Real fetch-based download — shows errors instead of a blank tab
   const downloadCSV = async (id) => {
     setDownloading(id);
     try {
@@ -169,7 +117,7 @@ export default function App() {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast('✅ CSV downloaded successfully!', 'success');
+      showToast('✅ CSV downloaded!', 'success');
     } catch (e) {
       showToast(`❌ Network error — is the server running? (${e.message})`, 'error');
     } finally {
@@ -255,8 +203,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-slate-200 font-sans selection:bg-purple-500/30 overflow-hidden relative">
-      
-      {/* Toast notification */}
+
+      {/* Toast */}
       <AnimatePresence>
         {toast && (
           <motion.div
@@ -274,7 +222,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* Completed Banner */}
+      {/* Completion Banner */}
       <AnimatePresence>
         {completedBanner && (
           <motion.div
@@ -286,13 +234,13 @@ export default function App() {
             <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
             <div>
               <p className="text-sm font-bold text-emerald-300">Extraction Complete!</p>
-              <p className="text-xs text-emerald-500">All leads are saved to disk. Click Download CSV to get your file.</p>
+              <p className="text-xs text-emerald-500">All leads saved to disk — click Download CSV.</p>
             </div>
             <button onClick={() => setCompletedBanner(false)} className="ml-2 text-emerald-600 hover:text-emerald-400 text-lg leading-none">×</button>
           </motion.div>
         )}
       </AnimatePresence>
-      
+
       {/* Background Orbs */}
       <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-purple-600/20 blur-[120px] rounded-full point-events-none" />
       <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-blue-600/10 blur-[150px] rounded-full point-events-none" />
@@ -312,12 +260,6 @@ export default function App() {
               className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${page === "home" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}
             >
               Scanner
-            </button>
-            <button
-              onClick={() => { setPage("filter"); }}
-              className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${page === "filter" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}
-            >
-              Upload
             </button>
             <button
               onClick={() => setPage("history")}
@@ -512,14 +454,12 @@ export default function App() {
                           disabled={!job.leads || job.leads.length === 0 || downloading === jobId}
                           className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-xl transition-all font-medium text-sm border border-emerald-500/20 disabled:opacity-50"
                         >
-                          {downloading === jobId
-                            ? <Loader2 className="w-4 h-4 animate-spin" />
-                            : <Download className="w-4 h-4" />}
+                          {downloading === jobId ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                           {downloading === jobId ? 'Preparing...' : 'Download CSV'}
                         </button>
                         {job.leads?.length > 0 && (
                           <p className="text-[10px] text-emerald-600 text-center flex items-center justify-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block"></span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
                             {job.leads.length} leads saved to disk
                           </p>
                         )}
@@ -630,199 +570,6 @@ export default function App() {
                 </motion.div>
               )}
             </motion.div>
-          ) : page === "filter" ? (
-            <motion.div
-              key="filter"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="flex-1 flex flex-col gap-8"
-            >
-              {/* Header */}
-              <div className="text-center max-w-2xl mx-auto mt-10">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-orange-500 to-pink-600 flex items-center justify-center mx-auto mb-6 shadow-xl shadow-orange-500/20">
-                  <Upload className="w-8 h-8 text-white" />
-                </div>
-                <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">
-                  Niche <span className="text-transparent bg-clip-text bg-gradient-to-r from-orange-400 to-pink-400">Filter Engine</span>
-                </h1>
-                <p className="text-slate-400 text-lg">
-                  Upload any CSV of leads. Enter a niche. We visit each website and strip out everything that doesn't match.
-                </p>
-              </div>
-
-              {/* Filter Form */}
-              <div className="glass-panel p-6 rounded-3xl max-w-3xl mx-auto w-full border border-white/10 relative group overflow-hidden">
-                <div className="absolute inset-0 bg-gradient-to-r from-orange-500/5 to-pink-500/5 rounded-3xl opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-
-                <p className="text-sm font-semibold text-slate-400 mb-4 uppercase tracking-wider">Step 1 — Enter your target niche</p>
-                <div className="relative mb-4">
-                  <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-                  <input
-                    type="text"
-                    placeholder="e.g. restoration company, water damage, med spa..."
-                    value={filterNiche}
-                    onChange={(e) => setFilterNiche(e.target.value)}
-                    disabled={filterLoading}
-                    className="w-full h-14 bg-white/5 border border-white/10 rounded-xl pl-12 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-orange-500/50 outline-none transition-all"
-                  />
-                </div>
-
-                <div className="flex items-center gap-3 mb-6">
-                  <select
-                    value={filterWorkers}
-                    onChange={(e) => setFilterWorkers(parseInt(e.target.value))}
-                    disabled={filterLoading}
-                    className="flex-1 h-12 bg-white/5 border border-white/10 rounded-xl px-4 text-white outline-none transition-all appearance-none text-sm"
-                  >
-                    <option value="5" className="bg-gray-900">5 Workers</option>
-                    <option value="10" className="bg-gray-900">10 Workers (Recommended)</option>
-                    <option value="15" className="bg-gray-900">15 Workers (Fast)</option>
-                    <option value="20" className="bg-gray-900">20 Workers (Max Speed)</option>
-                  </select>
-                </div>
-
-                <p className="text-sm font-semibold text-slate-400 mb-4 uppercase tracking-wider">Step 2 — Upload your CSV</p>
-                <label className={`w-full h-20 flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed transition-all cursor-pointer ${
-                  filterNiche.trim()
-                    ? 'border-orange-500/40 bg-orange-500/5 hover:bg-orange-500/10 text-orange-400 hover:border-orange-400/60'
-                    : 'border-white/10 bg-white/5 text-slate-500 cursor-not-allowed'
-                }`}>
-                  {filterLoading
-                    ? <><Loader2 className="w-6 h-6 animate-spin" /><span className="text-sm font-semibold">Uploading & Starting Engine...</span></>
-                    : <><Upload className="w-6 h-6" /><span className="text-sm font-semibold">{filterNiche.trim() ? 'Click to upload CSV' : 'Enter a niche above first'}</span></>}
-                  <input type="file" accept=".csv" className="hidden" onChange={filterCSV} disabled={filterLoading || !filterNiche.trim()} />
-                </label>
-
-                <p className="text-xs text-slate-600 mt-3 text-center">
-                  Accepts any CSV with Name/Company, Website, Phone columns. All other columns are preserved in the output.
-                </p>
-              </div>
-
-              {/* Progress Panel */}
-              {filterJob && (
-                <motion.div
-                  initial={{ opacity: 0, scale: 0.97 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="glass-panel p-8 rounded-3xl max-w-3xl mx-auto w-full border border-white/10 relative overflow-hidden"
-                >
-                  {filterJob.status === 'running' && (
-                    <div className="absolute top-0 left-0 w-full h-1 bg-white/5">
-                      <motion.div
-                        className="h-full bg-gradient-to-r from-orange-500 to-pink-500"
-                        initial={{ width: 0 }}
-                        animate={{ width: `${filterJob.progress}%` }}
-                        transition={{ ease: 'linear', duration: 0.5 }}
-                      />
-                    </div>
-                  )}
-
-                  <div className="flex items-start justify-between gap-6 flex-wrap">
-                    <div className="flex items-center gap-5">
-                      {filterJob.status === 'running' ? (
-                        <div className="relative w-16 h-16">
-                          <div className="w-16 h-16 rounded-full border-4 border-white/10 border-t-orange-500 animate-spin" />
-                          <div className="absolute inset-0 flex items-center justify-center font-bold text-xs text-white">{filterJob.progress}%</div>
-                        </div>
-                      ) : filterJob.status === 'completed' ? (
-                        <div className="w-16 h-16 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center border border-emerald-500/30">
-                          <CheckCircle className="w-8 h-8" />
-                        </div>
-                      ) : (
-                        <div className="w-16 h-16 rounded-full bg-rose-500/20 text-rose-400 flex items-center justify-center border border-rose-500/30">
-                          <XCircle className="w-8 h-8" />
-                        </div>
-                      )}
-                      <div>
-                        <h3 className="text-xl font-bold text-white capitalize">
-                          {filterJob.status === 'running' ? 'Filtering...' : filterJob.status === 'completed' ? 'Filter Complete' : filterJob.status}
-                        </h3>
-                        <p className="text-slate-400 text-sm mt-1">{filterJob.currentCity || `Niche: "${filterJob.niche}"`}</p>
-                      </div>
-                    </div>
-
-                    <div className="flex gap-8 flex-wrap">
-                      <div className="text-center">
-                        <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-1">Kept</p>
-                        <p className="text-3xl font-extrabold text-emerald-400">{filterJob.leads?.length || 0}</p>
-                      </div>
-                      {filterJob.stats?.rejected !== undefined && (
-                        <div className="text-center">
-                          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-1">Removed</p>
-                          <p className="text-3xl font-extrabold text-rose-400">{filterJob.stats.rejected}</p>
-                        </div>
-                      )}
-                      {filterJob.status === 'completed' && filterJob.leads?.length > 0 && (
-                        <div className="flex flex-col justify-center">
-                          <button
-                            onClick={() => downloadCSV(filterJobId)}
-                            disabled={downloading === filterJobId}
-                            className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 px-5 py-3 rounded-xl transition-all font-semibold text-sm border border-emerald-500/20"
-                          >
-                            {downloading === filterJobId ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                            Download Filtered CSV
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Live Logs */}
-                  {filterJob.logs && filterJob.logs.length > 0 && (
-                    <div className="mt-6 bg-[#0a0a0a] border border-white/5 rounded-xl p-4 max-h-52 overflow-y-auto font-mono text-[10px] sm:text-xs">
-                      {filterJob.logs.slice().reverse().map((logMsg, i) => (
-                        <div key={i} className={`mb-1 pb-1 border-b border-white/[0.02] ${
-                          logMsg.includes('❌') ? 'text-rose-400' :
-                          logMsg.includes('✅') ? 'text-emerald-400' :
-                          logMsg.includes('🔍') ? 'text-orange-400' :
-                          'text-slate-500'
-                        }`}>
-                          {logMsg}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </motion.div>
-              )}
-
-              {/* Result preview */}
-              {filterJob?.leads?.length > 0 && filterJob.status === 'completed' && (
-                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-3xl mx-auto w-full">
-                  <h3 className="text-lg font-bold text-white mb-4 flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-emerald-500" />
-                    Verified Leads Preview
-                  </h3>
-                  <div className="glass-panel rounded-2xl overflow-hidden border border-white/5">
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-left border-collapse whitespace-nowrap">
-                        <thead>
-                          <tr className="border-b border-white/10 bg-white/[0.02]">
-                            <th className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Business</th>
-                            <th className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Phone</th>
-                            <th className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">Website</th>
-                            <th className="px-5 py-3 text-xs font-semibold text-slate-400 uppercase tracking-wide">City</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filterJob.leads.slice(0, 50).map((l, i) => (
-                            <tr key={i} className="border-b border-white/[0.05] hover:bg-white/[0.03] transition-colors">
-                              <td className="px-5 py-3 font-medium text-white text-sm">{l.business_name}</td>
-                              <td className="px-5 py-3 text-slate-300 text-sm font-mono">{l.phone || '-'}</td>
-                              <td className="px-5 py-3">
-                                {l.website
-                                  ? <a href={l.website} target="_blank" rel="noreferrer" className="text-xs text-blue-400 hover:text-blue-300 flex items-center gap-1"><LinkIcon className="w-3 h-3" />Website</a>
-                                  : <span className="text-slate-600 text-xs">No Web</span>}
-                              </td>
-                              <td className="px-5 py-3 text-slate-400 text-sm">{l.city || '-'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </motion.div>
           ) : (
             <motion.div
               key="history"
@@ -868,7 +615,7 @@ export default function App() {
                           View
                         </button>
                         <button onClick={() => downloadCSV(j.id)} disabled={downloading === j.id} className="text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 px-3 py-2 rounded-lg transition-all flex items-center gap-1 disabled:opacity-60">
-                          {downloading === j.id ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
+                          {downloading === j.id && <Loader2 className="w-3 h-3 animate-spin" />}
                           CSV
                         </button>
                         <button onClick={() => togglePinStatus(j.id)} className={`text-xs font-bold ${j.pinned ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30' : 'bg-slate-500/20 text-slate-400 hover:bg-slate-500/30'} p-2 rounded-lg transition-all`} title={j.pinned ? "Unpin Session" : "Pin Session (Save)"}>
