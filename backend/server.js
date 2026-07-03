@@ -6,7 +6,7 @@ import multer from 'multer';
 import csvParser from 'csv-parser';
 import stream from 'stream';
 
-import { scrapeGoogleMaps, enrichCSVList } from './scraper.js';
+import { scrapeGoogleMaps, enrichCSVList, filterLeadsByNiche } from './scraper.js';
 import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, readCSVFromDisk, saveJobsToDisk, flushAllBuffers } from './store.js';
 import { log } from './utils.js';
 
@@ -22,6 +22,85 @@ app.use(bodyParser.json());
 loadJobsFromDisk();
 
 // =========================
+// CSV PREPROCESSING HELPER
+// =========================
+// LeadEngine exports CSVs with section headers like "--- WITH EMAIL ---"
+// before the actual column header row. This confuses csv-parser, making it
+// treat the section marker as the header and returning 0 data rows.
+// This function strips those markers and normalises the CSV into a clean
+// single-header format before it hits csv-parser.
+function preprocessLeadEngineCSV(buffer) {
+  // Strip BOM if present
+  let text = buffer.toString('utf8').replace(/^\uFEFF/, '');
+  const lines = text.split(/\r?\n/);
+
+  // Known section markers used by this exporter
+  const SECTION_MARKERS = ['--- with email ---', '--- without email ---'];
+
+  // Find the FIRST real header line — a line that has recognisable column names
+  const HEADER_SIGNALS = ['name', 'company', 'business', 'phone', 'website', 'email'];
+  let headerLine = '';
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+    const isMarker = SECTION_MARKERS.some(m => lower.includes(m));
+    if (!isMarker && HEADER_SIGNALS.some(s => lower.includes(s))) {
+      headerLine = line;
+      break;
+    }
+  }
+
+  if (!headerLine) {
+    // Can't detect header — return as-is and let csv-parser try
+    return buffer;
+  }
+
+  const output = [headerLine];
+  const headerLower = headerLine.toLowerCase().trim();
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;                                              // skip blank lines
+    const lower = trimmed.toLowerCase();
+    if (SECTION_MARKERS.some(m => lower.includes(m))) continue;         // skip section markers
+    if (lower === headerLower) continue;                                 // skip duplicate headers
+    if (trimmed === headerLine) continue;                                // exact duplicate
+    if (lower.startsWith('"---') || lower.startsWith('---')) continue;  // catch any other markers
+    output.push(line);
+  }
+
+  return Buffer.from(output.join('\n'), 'utf8');
+}
+
+// Case-insensitive column lookup — handles minor CSV header variations
+function col(data, ...keys) {
+  // Build a lowercase key map once
+  const map = {};
+  for (const k of Object.keys(data)) map[k.toLowerCase().trim()] = data[k];
+  for (const k of keys) {
+    const v = data[k] || map[k.toLowerCase().trim()];
+    if (v && String(v).trim()) return String(v).trim();
+  }
+  return '';
+}
+
+function parseLead(data) {
+  return {
+    business_name : col(data, 'Name', 'Company Name', 'Business Name', 'Company', 'business_name'),
+    phone         : col(data, 'Phone', 'Phone number', 'phone'),
+    website       : col(data, 'Website', 'website'),
+    primary_email : col(data, 'Primary Email', 'Email', 'email', 'primary_email'),
+    rating        : col(data, 'Rating', 'rating'),
+    reviews       : col(data, 'Reviews', 'Review', 'reviews'),
+    intent        : col(data, 'Intent', 'intent'),
+    score         : col(data, 'Lead Score', 'score'),
+    city          : col(data, 'City', 'city'),
+    address       : col(data, 'Address', 'address'),
+    category      : col(data, 'Category', 'category'),
+    niche         : col(data, 'Niche', 'niche'),
+  };
+}
+
+// =========================
 // CSV UPLOAD & ENRICHMENT
 // =========================
 app.post('/upload-csv', upload.single('file'), (req, res) => {
@@ -33,23 +112,15 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
   const jobId = nanoid();
   const leads = [];
 
+  const cleanBuffer = preprocessLeadEngineCSV(req.file.buffer);
   const bufferStream = new stream.PassThrough();
-  bufferStream.end(req.file.buffer);
+  bufferStream.end(cleanBuffer);
 
   bufferStream
     .pipe(csvParser())
     .on('data', (data) => {
-       const lead = {
-         business_name: data['Company Name'] || data.Company || data.Name || data.business_name || '',
-         phone: data['Phone number'] || data.Phone || data.phone || '',
-         website: data.website || data.Website || '',
-         primary_email: data['Primary Email'] || data.primary_email || '',
-         rating: data.Rating || data.rating || '',
-         reviews: data.Review || data.Reviews || data.reviews || '',
-         intent: data.Intent || data.intent || 'LOW',
-         city: data.City || data.city || '',
-       };
-       leads.push(lead);
+       const lead = parseLead(data);
+       if (lead.business_name) leads.push(lead);
     })
     .on('end', () => {
        createJob(jobId, {
@@ -90,6 +161,83 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
        }).catch(err => {
           log(`❌ Error: ${err.message}`, jobId);
           updateJob(jobId, { status: 'failed', error: err.message });
+       });
+
+       res.json({ jobId });
+    });
+});
+
+// =========================
+// CSV NICHE FILTER
+// =========================
+app.post('/filter-csv', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  if (!req.body.niche) return res.status(400).json({ error: 'Niche is required' });
+
+  const niche = req.body.niche.trim();
+  const workers = parseInt(req.body.workers) || 3;
+  const jobId = nanoid();
+  const leads = [];
+
+  const cleanBuffer = preprocessLeadEngineCSV(req.file.buffer);
+  const bufferStream = new stream.PassThrough();
+  bufferStream.end(cleanBuffer);
+
+  bufferStream
+    .pipe(csvParser())
+    .on('data', (data) => {
+       const lead = parseLead(data);
+       if (lead.business_name) leads.push(lead);
+    })
+    .on('end', () => {
+       createJob(jobId, {
+         niche,
+         location: 'CSV Filter',
+         filterType: 'all',
+         status: 'running',
+         progress: 0,
+         leads: [],
+         logs: [],
+         currentCity: 'Starting filter...',
+         createdAt: new Date(),
+         stopFlag: false,
+         filterMode: true,
+         totalInput: leads.length,
+       });
+
+       log(`🔍 CSV Filter started: "${niche}" on ${leads.length} leads`, jobId);
+
+       filterLeadsByNiche(leads, niche, jobId, workers, (progressData) => {
+         const job = getJob(jobId);
+         if (!job || job.stopFlag) return;
+         if (typeof progressData === 'number') {
+           updateJob(jobId, { progress: progressData });
+         } else {
+           updateJob(jobId, {
+             progress: progressData.progress ?? job.progress,
+             currentCity: progressData.city ?? job.currentCity
+           });
+         }
+       }).then(({ passed, rejected }) => {
+         const job = getJob(jobId);
+         if (!job) return;
+         updateJob(jobId, {
+           leads: passed,
+           status: job.stopFlag ? 'cancelled' : 'completed',
+           progress: 100,
+           stats: {
+             total: passed.length,
+             rejected: rejected.length,
+             highIntent: passed.filter(l => l.intent === 'HIGH').length,
+             mediumIntent: passed.filter(l => l.intent === 'MEDIUM').length,
+             lowIntent: passed.filter(l => l.intent === 'LOW').length,
+           }
+         });
+         saveJobsToDisk();
+         log(`✅ Filter done: ${passed.length} kept, ${rejected.length} removed`, jobId);
+       }).catch(err => {
+         log(`❌ Filter error: ${err.message}`, jobId);
+         updateJob(jobId, { status: 'failed', error: err.message });
        });
 
        res.json({ jobId });
