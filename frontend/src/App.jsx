@@ -20,14 +20,7 @@ export default function App() {
   const [uploadLoading, setUploadLoading] = useState(false);
   
   const [history, setHistory] = useState([]);
-  const [downloading, setDownloading] = useState(null);
-  const [toast, setToast] = useState(null);
-  const [completedBanner, setCompletedBanner] = useState(false);
-
-  const showToast = (msg, type = 'error') => {
-    setToast({ msg, type });
-    setTimeout(() => setToast(null), 5000);
-  };
+  const [csvSavedToDisk, setCsvSavedToDisk] = useState(false);
 
   const filterOptions = [
     { value: "all", label: "All Leads" },
@@ -90,43 +83,9 @@ export default function App() {
     if (page === "history") fetchHistory();
   }, [page]);
 
-  // Notify when job completes
-  useEffect(() => {
-    if (job?.status === 'completed' || job?.status === 'cancelled') {
-      setCompletedBanner(true);
-      setTimeout(() => setCompletedBanner(false), 8000);
-    }
-  }, [job?.status]);
-
-  // Real fetch-based download — shows errors instead of a blank tab
-  const downloadCSV = async (id) => {
-    setDownloading(id);
-    try {
-      const res = await fetch(`http://localhost:3001/csv/${id}`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-        showToast(`❌ Download failed: ${err.error}`, 'error');
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `leads-${id}.csv`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-      showToast('✅ CSV downloaded!', 'success');
-    } catch (e) {
-      showToast(`❌ Network error — is the server running? (${e.message})`, 'error');
-    } finally {
-      setDownloading(null);
-    }
-  };
-
   useEffect(() => {
     if (!jobId) return;
+    setCsvSavedToDisk(false);
     const poll = setInterval(async () => {
       try {
         const res = await fetch(`http://localhost:3001/results/${jobId}`);
@@ -139,7 +98,20 @@ export default function App() {
         }
       } catch {}
     }, 1500);
-    return () => clearInterval(poll);
+
+    // Poll for disk-save confirmation every 5 seconds
+    const diskPoll = setInterval(async () => {
+      try {
+        const r = await fetch(`http://localhost:3001/csv-exists/${jobId}`);
+        const d = await r.json();
+        if (d.exists) {
+          setCsvSavedToDisk(true);
+          clearInterval(diskPoll);
+        }
+      } catch {}
+    }, 5000);
+
+    return () => { clearInterval(poll); clearInterval(diskPoll); };
   }, [jobId]);
 
   const stopScraping = async () => {
@@ -203,44 +175,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-[#050505] text-slate-200 font-sans selection:bg-purple-500/30 overflow-hidden relative">
-
-      {/* Toast */}
-      <AnimatePresence>
-        {toast && (
-          <motion.div
-            initial={{ opacity: 0, y: -20, x: '-50%' }}
-            animate={{ opacity: 1, y: 0, x: '-50%' }}
-            exit={{ opacity: 0, y: -20, x: '-50%' }}
-            className={`fixed top-6 left-1/2 z-[100] px-5 py-3 rounded-2xl text-sm font-semibold shadow-2xl border ${
-              toast.type === 'success'
-                ? 'bg-emerald-900/90 border-emerald-500/40 text-emerald-300'
-                : 'bg-rose-900/90 border-rose-500/40 text-rose-300'
-            }`}
-          >
-            {toast.msg}
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Completion Banner */}
-      <AnimatePresence>
-        {completedBanner && (
-          <motion.div
-            initial={{ opacity: 0, y: 80 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 80 }}
-            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[100] px-6 py-4 rounded-2xl bg-emerald-900/95 border border-emerald-500/40 shadow-2xl flex items-center gap-4"
-          >
-            <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
-            <div>
-              <p className="text-sm font-bold text-emerald-300">Extraction Complete!</p>
-              <p className="text-xs text-emerald-500">All leads saved to disk — click Download CSV.</p>
-            </div>
-            <button onClick={() => setCompletedBanner(false)} className="ml-2 text-emerald-600 hover:text-emerald-400 text-lg leading-none">×</button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
+      
       {/* Background Orbs */}
       <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-purple-600/20 blur-[120px] rounded-full point-events-none" />
       <div className="absolute bottom-[-20%] right-[-10%] w-[60%] h-[60%] bg-blue-600/10 blur-[150px] rounded-full point-events-none" />
@@ -449,20 +384,25 @@ export default function App() {
                       </div>
                       
                       <div className="flex flex-col gap-3 justify-center">
-                        <button
-                          onClick={() => downloadCSV(jobId)}
-                          disabled={!job.leads || job.leads.length === 0 || downloading === jobId}
-                          className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-xl transition-all font-medium text-sm border border-emerald-500/20 disabled:opacity-50"
-                        >
-                          {downloading === jobId ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
-                          {downloading === jobId ? 'Preparing...' : 'Download CSV'}
-                        </button>
-                        {job.leads?.length > 0 && (
-                          <p className="text-[10px] text-emerald-600 text-center flex items-center justify-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
-                            {job.leads.length} leads saved to disk
-                          </p>
-                        )}
+                        <div className="flex flex-col gap-1">
+                          <button
+                            onClick={() => window.open(`http://localhost:3001/csv/${jobId}`)}
+                            disabled={!job.leads || job.leads.length === 0}
+                            className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-xl transition-all font-medium text-sm border border-emerald-500/20 disabled:opacity-50"
+                            title="Leads are continuously saved to disk — safe to download at any time!"
+                          >
+                            <Download className="w-4 h-4" /> Download CSV
+                          </button>
+                          {csvSavedToDisk ? (
+                            <span className="text-[10px] text-emerald-500 font-bold flex items-center gap-1 pl-1 animate-pulse">
+                              <CheckCircle className="w-3 h-3" /> Saved to disk — data is safe
+                            </span>
+                          ) : (
+                            <span className="text-[10px] text-slate-600 flex items-center gap-1 pl-1">
+                              Saving to disk...
+                            </span>
+                          )}
+                        </div>
                         
                         {(job.status === "running" || job.pauseFlag) && (
                           <div className="flex flex-col gap-2">
@@ -614,8 +554,7 @@ export default function App() {
                         <button onClick={() => {setJobId(j.id); setPage("home");}} className="text-xs font-bold bg-white/5 hover:bg-white/10 text-white px-3 py-2 rounded-lg transition-all">
                           View
                         </button>
-                        <button onClick={() => downloadCSV(j.id)} disabled={downloading === j.id} className="text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 px-3 py-2 rounded-lg transition-all flex items-center gap-1 disabled:opacity-60">
-                          {downloading === j.id && <Loader2 className="w-3 h-3 animate-spin" />}
+                        <button onClick={() => window.open(`http://localhost:3001/csv/${j.id}`)} className="text-xs font-bold bg-purple-500/20 hover:bg-purple-500/30 text-purple-300 px-3 py-2 rounded-lg transition-all">
                           CSV
                         </button>
                         <button onClick={() => togglePinStatus(j.id)} className={`text-xs font-bold ${j.pinned ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30' : 'bg-slate-500/20 text-slate-400 hover:bg-slate-500/30'} p-2 rounded-lg transition-all`} title={j.pinned ? "Unpin Session" : "Pin Session (Save)"}>

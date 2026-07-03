@@ -30,11 +30,11 @@ function appendToCSV(id, newLeads, niche) {
   const buffer = appendBuffers.get(id);
   buffer.leads.push(...newLeads);
   
-  // Flush every 10 leads — protects data sooner
-  if (buffer.leads.length >= 10) {
+  // Flush if buffer is large, or set a timer to flush when idle
+  if (buffer.leads.length >= 50) {
       flushAppendBuffer(id, niche);
   } else if (!buffer.timer) {
-      buffer.timer = setTimeout(() => flushAppendBuffer(id, niche), 2000);
+      buffer.timer = setTimeout(() => flushAppendBuffer(id, niche), 1000);
   }
 }
 
@@ -72,13 +72,14 @@ function flushAppendBuffer(id, niche) {
     l.website_quality || '',
     l.city || '',
     niche || ''
-  ].map(f => `"${String(f).replace(/"/g, '""')}`).join(',')).join('\n') + '\n';
+  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n') + '\n';
   
   fs.appendFileSync(file, rows);
 }
 
 // =========================
 // REWRITE FULL CSV (for enrichment updates)
+// Called when a background worker updates an existing lead
 // =========================
 function rewriteCSV(id, leads, niche) {
   if (!leads || leads.length === 0) return;
@@ -100,7 +101,7 @@ function rewriteCSV(id, leads, niche) {
     l.website_quality || '',
     l.city || '',
     niche || ''
-  ].map(f => `"${String(f).replace(/"/g, '""')}`).join(',')).join('\n') + '\n';
+  ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n') + '\n';
 
   try {
     fs.writeFileSync(file, headers + rows);
@@ -173,12 +174,19 @@ export function updateJob(id, updates = {}) {
   const job = jobs.get(id);
   if (!job) return null;
 
+  // =========================
+  // SAFE PROGRESS
+  // =========================
   if (typeof updates.progress === 'number') {
     updates.progress = Math.max(job.progress, updates.progress);
   }
 
+  // =========================
+  // SAFE LEADS MERGE
+  // Block new leads if stopped — but still allow enrichment and log updates
+  // =========================
   if (job.stopFlag && updates.leads) {
-    delete updates.leads;
+    delete updates.leads; // Drop new leads silently when stopped
   }
 
   if (updates.leads && Array.isArray(updates.leads)) {
@@ -233,10 +241,18 @@ export function updateJob(id, updates = {}) {
     });
 
     job.leads.push(...newLeads);
+    
+    // Auto-save immediately to disk
     appendToCSV(id, newLeads, job.niche);
+    
     delete updates.leads;
   }
 
+  // =========================
+  // ENRICH EXISTING LEAD (from background worker)
+  // Background workers call updateJob(id, { enrichLead: {...} })
+  // We find the lead by business_name and merge new fields in.
+  // =========================
   if (updates.enrichLead) {
     const enriched = updates.enrichLead;
     const key = enriched.business_name.trim().toLowerCase();
@@ -251,18 +267,24 @@ export function updateJob(id, updates = {}) {
         if (enriched.primary_email)    job.leads[idx].primary_email    = enriched.primary_email;
         if (enriched.intent)           job.leads[idx].intent           = enriched.intent;
         if (enriched.score !== undefined) job.leads[idx].score         = enriched.score;
+
+        // Debounced rewrite — waits 500ms after last enrichment before hitting disk
         debouncedRewriteCSV(id, job.leads, job.niche);
       }
     }
     delete updates.enrichLead;
   }
 
+  // =========================
+  // APPLY UPDATES
+  // =========================
   Object.assign(job, updates);
+
   return job;
 }
 
 // =========================
-// PERSISTENCE
+// PERSISTENCE LOGIC
 // =========================
 const DB_FILE = path.join(process.cwd(), 'exports', 'jobs_db.json');
 
@@ -271,6 +293,7 @@ export function loadJobsFromDisk() {
     try {
       const data = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
       for (const [id, job] of Object.entries(data)) {
+        // Mark as not running on fresh boot
         if (job.status === 'running' || job.pauseFlag) {
            job.status = 'stopped';
            job.pauseFlag = false;
@@ -285,36 +308,33 @@ export function loadJobsFromDisk() {
   }
 }
 
-// Save ALL jobs — not just pinned — so a server restart never loses data
 export function saveJobsToDisk() {
   const dir = path.join(process.cwd(), 'exports');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   try {
     const dataToSave = {};
     for (const [id, job] of jobs.entries()) {
-      dataToSave[id] = job;
+      // ✅ Save ALL jobs — not just pinned ones.
+      // This ensures leads are never lost even if the user forgets to pin.
+      // We strip the full leads array to save space; the CSV file on disk is
+      // the authoritative data source. We only need the metadata.
+      const { leads, logs, ...meta } = job;
+      dataToSave[id] = {
+        ...meta,
+        leadCount: leads ? leads.length : 0,
+        // Keep leads in DB only for pinned jobs (needed for in-memory /csv route)
+        leads: job.pinned ? leads : []
+      };
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2));
   } catch (err) {
-    console.log(`⚠️ Failed to save jobs DB: ${err.message}`);
+    // silently fail to not spam logs
   }
 }
 
-// Read raw CSV file from disk — fallback for download after server restart
-export function readCSVFromDisk(id) {
-  const file = path.join(process.cwd(), 'exports', `leads-${id}.csv`);
-  if (fs.existsSync(file)) {
-    try { return fs.readFileSync(file, 'utf-8'); } catch (e) { return null; }
-  }
-  return null;
-}
-
-// Flush ALL pending append buffers to disk (called on shutdown)
-export function flushAllBuffers() {
-  for (const [id, buffer] of appendBuffers.entries()) {
-    const job = jobs.get(id);
-    if (job) flushAppendBuffer(id, job.niche);
-  }
+// Helper: get the path to the CSV file for a given job ID
+export function getCSVFilePath(id) {
+  return path.join(process.cwd(), 'exports', `leads-${id}.csv`);
 }
 
 // Auto-save every 10 seconds
@@ -322,39 +342,25 @@ setInterval(() => {
   if (jobs.size > 0) saveJobsToDisk();
 }, 10000);
 
-// =========================
-// GRACEFUL SHUTDOWN
-// Flush buffered leads + save jobs DB before process exits
-// =========================
-function gracefulShutdown(signal) {
-  console.log(`\n💤 ${signal} received — saving all data...`);
-  try {
-    flushAllBuffers();
-    saveJobsToDisk();
-    console.log('✅ All data saved. Goodbye.');
-  } catch (e) {
-    console.error('⚠️ Shutdown save failed:', e.message);
-  }
-  process.exit(0);
-}
-
-process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGHUP',  () => gracefulShutdown('SIGHUP'));
-
-// Never evict jobs that have leads — only empty jobs older than 24h
+// Auto-cleanup unpinned memory after 24 hours (extended from 4h to give users time to download)
 setInterval(() => {
   const now = Date.now();
   for (const [id, job] of jobs.entries()) {
+    // Keep pinned jobs or currently running/paused jobs
     if (job.pinned || job.status === 'running' || job.pauseFlag) continue;
-    if (job.leads && job.leads.length > 0) continue;
+    
+    // Remove from memory after 24 hours — BUT keep the CSV file on disk
+    // Users can still download via /csv-file/:id as long as the file exists
     const age = now - new Date(job.createdAt).getTime();
     if (age > 24 * 60 * 60 * 1000) {
       jobs.delete(id);
-      console.log(`🧹 Evicted empty job ${id} from memory (24h old)`);
+      // NOTE: We intentionally do NOT delete the CSV file here anymore.
+      // The /csv-file/:id route will serve it directly from disk even after memory cleanup.
+      // Only manual deletion via DELETE /job/:id removes the file.
+      console.log(`🧹 Evicted unpinned job ${id} from memory (CSV file preserved on disk)`);
     }
   }
-}, 30 * 60 * 1000);
+}, 10 * 60 * 1000);
 
 // =========================
 // DELETE JOB
@@ -368,4 +374,7 @@ export function deleteJob(id) {
   saveJobsToDisk();
 }
 
+// =========================
+// EXPORT
+// =========================
 export { jobs };

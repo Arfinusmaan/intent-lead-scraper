@@ -23,78 +23,77 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
   const cleanCategory = (category || '').toLowerCase();
   const cleanText = (sidePaneText || '').toLowerCase();
 
-  // 1. Restoration — home/property ONLY. Block all auto/vehicle/unrelated businesses.
-  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
-    const blockKeywords = [
-      // Auto / Vehicle — all variants
-      'auto ', 'auto-', 'automotive', 'automobile',
-      'car ', 'cars ', ' car ', 'car wash', 'car cleaning', 'car detailing',
-      'vehicle', 'truck repair', 'fleet service',
-      'towing', 'roadside', 'tire shop', 'tire repair', 'tire service',
-      'oil change', 'oil lube', 'mechanic', 'auto mechanic',
-      'auto detailing', 'detailing shop', 'mobile detailing',
-      'auto body', 'body shop', 'body work',
-      'collision repair', 'collision center', 'collision shop',
-      'transmission', 'engine repair',
-      'motorcycle', 'motorbike', 'auto cleaning',
-      // Other non-property restoration
-      'furniture restoration', 'furniture repair', 'upholstery',
-      'book restoration', 'art restoration', 'artwork',
-      'painting restoration', 'photo restoration', 'image restoration',
-      'watch repair', 'antique', 'leather restoration',
-      'dental', 'teeth whitening', 'hair salon', 'hair restoration',
-      'computer repair', 'phone repair', 'electronics repair', 'data recovery',
-      'pool restoration', 'pool cleaning', 'pool service',
-      'janitorial', 'window cleaning', 'gutter cleaning',
+  // 1. Restoration — water/fire/flood/mold damage only. No cleaning, auto, art, etc.
+  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold') || cleanNiche.includes('flood')) {
+    // Hard block: non-property restoration types
+    const hardBlock = [
+      'car ', 'auto ', 'vehicle', 'furniture', 'book ', 'art ', 'watch', 'pen ', 'antique',
+      'leather', 'classic car', 'engine', 'motor', 'cycle', 'collision',
+      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair',
+      // Block cleaning companies that aren't damage restoration
+      'maid', 'janitorial', 'house cleaning', 'home cleaning', 'office cleaning',
+      'commercial cleaning', 'residential cleaning', 'cleaning service', 'cleaning company',
+      'pressure wash', 'window clean', 'gutter clean', 'pool clean', 'chimney clean'
     ];
-    if (blockKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+    if (hardBlock.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return false;
     }
 
-    // Strong property-restoration match → accept immediately
+    // Block if the category is purely "cleaning" with no damage/restoration context
+    if ((cleanCategory.includes('cleaning') || cleanCategory.includes('cleaner')) &&
+        !cleanCategory.includes('restoration') && !cleanCategory.includes('remediation') &&
+        !cleanCategory.includes('damage') && !cleanCategory.includes('mold') &&
+        !cleanCategory.includes('flood') && !cleanCategory.includes('fire') &&
+        !cleanCategory.includes('water damage') && !cleanCategory.includes('disaster')) {
+      return false;
+    }
+
+    // Strong match — accept immediately
     const strongMatch = [
-      'water damage', 'fire damage', 'mold', 'mould', 'remediation', 'restoration',
-      'flood', 'emergency service', 'mitigation', 'disaster', 'sewage',
-      'biohazard', 'smoke damage', 'storm damage', 'contents cleaning',
-      'structural drying', 'dehumidif', 'iicrc'
+      'water damage', 'fire damage', 'mold', 'remediation', 'restoration',
+      'flood', 'emergency service', 'mitigation', 'disaster', 'sewage', 'smoke damage'
     ];
     if (strongMatch.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return true;
     }
 
-    // Tighter fallback — ONLY property/construction specific terms in pane text
-    const propertyAllowed = [
-      'water damage', 'fire damage', 'flood damage', 'storm damage',
-      'mold removal', 'mold remediation', 'sewage backup', 'biohazard',
-      'mitigation', 'disaster restoration', 'emergency restoration',
-      'structural repair', 'property damage', 'home restoration',
-      'dehumidif', 'moisture damage', 'drywall repair',
-      'general contractor', 'renovation contractor', 'construction company'
+    // Looser fallback — sidePaneText may mention the keyword
+    const allowed = [
+      'contractor', 'construction', 'builder', 'renovation',
+      'roofing', 'plumbing', 'damage', 'dryer vent'
     ];
-    if (cleanText.length > 0 && propertyAllowed.some(kw => cleanText.includes(kw))) {
+    if (cleanText.length > 0 && allowed.some(kw => cleanText.includes(kw))) {
       return true;
     }
 
-    // sidePaneText not loaded yet — give benefit of the doubt
+    // If sidePaneText is empty, give benefit of the doubt
     if (!cleanText) return true;
     return false;
   }
 
-  // 2. Med Spa
-  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
-    const disallowed = [
+  // 2. Med Spa — aesthetic/medical clinics only. No massage parlors, day spas, wellness spas.
+  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa') || cleanNiche.includes('aesthetic')) {
+    // Hard block: non-medical spa types
+    const hardBlock = [
       'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology',
-      'nail salon', 'hair salon', 'barber', 'chiropractor'
+      'nail salon', 'hair salon', 'barber', 'chiropractor',
+      'day spa', 'wellness spa', 'relaxation spa', 'resort spa', 'hotel spa',
+      'spa & salon', 'salon & spa', 'beauty salon', 'tanning salon'
     ];
-    if (disallowed.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
+    if (hardBlock.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
       return false;
     }
-    if (cleanCategory.includes('massage') || cleanName.includes('massage')) {
-      const medicalTerms = ['medical', 'med', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin'];
-      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term))) {
+
+    // Block any generic "spa" or "massage" that doesn't have medical/aesthetic terms
+    const medicalTerms = ['medical', 'med ', 'medspa', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin', 'botox', 'filler', 'injectable', 'cosmetic'];
+    if (cleanCategory.includes('massage') || cleanName.includes('massage') ||
+        cleanCategory.includes('day spa') || cleanName.includes('day spa') ||
+        cleanCategory.includes('spa') || cleanName.includes('spa')) {
+      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term) || cleanText.includes(term))) {
         return false;
       }
     }
+
     return true;
   }
 
@@ -121,6 +120,7 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
 
   return true;
 }
+
 
 // Normalize phone numbers — strip everything except digits and leading +
 function cleanPhone(phone) {
@@ -440,13 +440,27 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   continue;
               }
               
-              // Built-in heuristics for pure Massage Spas if looking for Med Spas
-              if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa')) {
-                  if (lowerName.includes('massage') && !lowerName.match(/med|medical|aesthetic|laser|clinic|beauty/)) {
-                      log(`⏭️ Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
+              // Early name-level skip for Restoration — block cleaning companies before clicking
+              if (lowerNiche.includes('restoration') || lowerNiche.includes('water damage') || lowerNiche.includes('fire damage') || lowerNiche.includes('mold') || lowerNiche.includes('flood')) {
+                  const cleaningNames = ['maid', 'janitorial', 'house cleaning', 'home cleaning', 'office cleaning', 'commercial cleaning', 'residential cleaning', 'cleaning service', 'pressure wash', 'window clean', 'gutter clean', 'pool clean', 'chimney clean'];
+                  if (cleaningNames.some(kw => lowerName.includes(kw))) {
+                      log(`⏭️ Skipping ${name} (Cleaning company in Restoration search)`, jobId);
                       continue;
                   }
               }
+
+              // Early name-level skip for Med Spa — block massage, day spa, wellness spa before clicking
+              if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa') || lowerNiche.includes('aesthetic')) {
+                  const medicalTerms = ['med', 'medical', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin', 'botox', 'filler', 'injectable', 'cosmetic'];
+                  const genericSpaNames = ['massage', 'day spa', 'wellness spa', 'relaxation spa', 'resort spa', 'hotel spa', 'thai spa', 'nail salon', 'hair salon', 'tanning salon', 'beauty salon', 'spa & salon', 'salon & spa'];
+                  if (genericSpaNames.some(kw => lowerName.includes(kw))) {
+                      if (!medicalTerms.some(term => lowerName.includes(term))) {
+                          log(`⏭️ Skipping ${name} (Non-medical spa/massage in Med Spa search)`, jobId);
+                          continue;
+                      }
+                  }
+              }
+
 
               processedNames.add(cleanNameKey);
               foundNewInBatch = true;

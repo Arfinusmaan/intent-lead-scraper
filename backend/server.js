@@ -5,9 +5,10 @@ import { nanoid } from 'nanoid';
 import multer from 'multer';
 import csvParser from 'csv-parser';
 import stream from 'stream';
+import fs from 'fs';
 
 import { scrapeGoogleMaps, enrichCSVList } from './scraper.js';
-import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, readCSVFromDisk, saveJobsToDisk, flushAllBuffers } from './store.js';
+import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, getCSVFilePath } from './store.js';
 import { log } from './utils.js';
 
 const app = express();
@@ -87,11 +88,9 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
           const lowIntent = job.leads.filter(l => l.intent === 'LOW').length;
           const stats = { highIntent, mediumIntent, lowIntent, total: job.leads.length };
           updateJob(jobId, { status: job.stopFlag ? 'cancelled' : 'completed', progress: 100, stats });
-          saveJobsToDisk();
        }).catch(err => {
           log(`❌ Error: ${err.message}`, jobId);
           updateJob(jobId, { status: 'failed', error: err.message });
-          saveJobsToDisk();
        });
 
        res.json({ jobId });
@@ -137,6 +136,9 @@ app.post('/scrape', async (req, res) => {
           const job = getJob(jobId);
           if (!job || job.stopFlag) return;
 
+          // =========================
+          // PROGRESS + CITY
+          // =========================
           if (typeof progressData === 'number') {
             updateJob(jobId, { progress: progressData });
           } else {
@@ -145,6 +147,9 @@ app.post('/scrape', async (req, res) => {
               currentCity: progressData.city ?? job.currentCity
             });
 
+            // =========================
+            // 🔥 FIX: PUSH LEADS PROPERLY
+            // =========================
             if (progressData.leads && Array.isArray(progressData.leads)) {
               progressData.leads.forEach(lead => {
                 updateJob(jobId, { leads: [lead] });
@@ -157,15 +162,16 @@ app.post('/scrape', async (req, res) => {
       const job = getJob(jobId);
       if (!job) return;
 
+      // Compute stats regardless of stop state — needed for CSV download
       const highIntent   = job.leads.filter(l => l.intent === 'HIGH').length;
       const mediumIntent = job.leads.filter(l => l.intent === 'MEDIUM').length;
       const lowIntent    = job.leads.filter(l => l.intent === 'LOW').length;
       const stats = { highIntent, mediumIntent, lowIntent, total: job.leads.length };
 
       if (job.stopFlag) {
+        // Keep status as 'cancelled' — don't overwrite what the /stop endpoint set
         log(`🛑 Cancelled with ${job.leads.length} leads collected`, jobId);
         updateJob(jobId, { stats });
-        saveJobsToDisk();
         return;
       }
 
@@ -175,7 +181,6 @@ app.post('/scrape', async (req, res) => {
         stats
       });
 
-      saveJobsToDisk();
       log(`✅ Completed: ${job.leads.length} leads`, jobId);
 
     } catch (err) {
@@ -187,7 +192,6 @@ app.post('/scrape', async (req, res) => {
           status: 'failed',
           error: err.message
         });
-        saveJobsToDisk();
       }
     }
   })();
@@ -206,13 +210,13 @@ app.get('/results/:id', (req, res) => {
 });
 
 // =========================
-// CSV EXPORT — BULLETPROOF
-// 3 fallback paths: memory → disk file → 404
+// CSV EXPORT — BULLETPROOF (falls back to disk file if job not in memory)
 // =========================
 app.get('/csv/:id', (req, res) => {
-  const job = getJob(req.params.id);
+  const id = req.params.id;
+  const job = getJob(id);
 
-  // Path 1: Job is in memory with leads (normal path)
+  // ✅ PRIMARY PATH: job is in memory and has leads
   if (job && job.leads && job.leads.length > 0) {
     const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
 
@@ -228,12 +232,12 @@ app.get('/csv/:id', (req, res) => {
       l.website_quality || '',
       l.city || '',
       job.niche || ''
-    ].map(f => `"${String(f).replace(/"/g, '""')}`).join(',');
+    ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
 
     const withEmail = job.leads.filter(l => l.primary_email);
     const withoutEmail = job.leads.filter(l => !l.primary_email);
 
-    let csvContent = '';
+    let csvContent = "";
     if (withEmail.length > 0) {
         csvContent += `"--- WITH EMAIL ---"\n` + headers + withEmail.map(formatRow).join('\n') + '\n\n';
     }
@@ -243,20 +247,29 @@ app.get('/csv/:id', (req, res) => {
     if (!csvContent) csvContent = headers + job.leads.map(formatRow).join('\n');
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${id}.csv"`);
     return res.send(csvContent);
   }
 
-  // Path 2: Job fell out of memory (server restarted) — serve the disk CSV
-  const diskCSV = readCSVFromDisk(req.params.id);
-  if (diskCSV) {
+  // ✅ FALLBACK PATH: job not in memory — stream pre-written CSV file from disk
+  // This saves the day after server restarts, crashes, or memory eviction.
+  const csvFile = getCSVFilePath(id);
+  if (fs.existsSync(csvFile)) {
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename="leads-${req.params.id}.csv"`);
-    return res.send(diskCSV);
+    res.setHeader('Content-Disposition', `attachment; filename="leads-${id}.csv"`);
+    return res.sendFile(csvFile);
   }
 
-  // Path 3: Nothing found
-  return res.status(404).json({ error: 'No leads found. The job may have been deleted or never produced data.' });
+  return res.status(404).json({ error: 'No data found. The job may have expired or never ran.' });
+});
+
+// =========================
+// CHECK IF CSV FILE EXISTS ON DISK
+// (Used by frontend to show a "Saved to disk" badge)
+// =========================
+app.get('/csv-exists/:id', (req, res) => {
+  const csvFile = getCSVFilePath(req.params.id);
+  res.json({ exists: fs.existsSync(csvFile) });
 });
 
 // =========================
@@ -282,14 +295,14 @@ app.get('/history', (req, res) => {
 // =========================
 // STOP
 // =========================
+// =========================
+// STOP
+// =========================
 app.post('/stop/:id', (req, res) => {
   const jobId = req.params.id;
   setStopFlag(jobId, true);
   updateJob(jobId, { status: 'cancelled', cancelled: true });
   log(`🛑 Stop requested`, jobId);
-  // Flush buffered leads immediately so CSV is ready for download
-  flushAllBuffers();
-  saveJobsToDisk();
   res.json({ status: 'stopping' });
 });
 
@@ -313,6 +326,7 @@ app.post('/resume/:id', (req, res) => {
   // Dead Resume: Server restarted and Playwright is gone. Restart it.
   if (job.workerRunning === false && job.niche !== 'CSV Upload') {
      job.workerRunning = true;
+     // Re-trigger background async scrape, it will pick up from job.lastCityIndex
      (async () => {
         try {
           await scrapeGoogleMaps(
@@ -349,16 +363,13 @@ app.post('/resume/:id', (req, res) => {
 
           if (finalJob.stopFlag) {
             updateJob(job.id, { stats, workerRunning: false });
-            saveJobsToDisk();
             return;
           }
           updateJob(job.id, { status: 'completed', progress: 100, stats, workerRunning: false });
-          saveJobsToDisk();
           log(`✅ Completed Resumed Scan`, job.id);
         } catch (err) {
           log(`❌ Error Resuming: ${err.message}`, job.id);
           updateJob(job.id, { status: 'failed', error: err.message, workerRunning: false });
-          saveJobsToDisk();
         }
      })();
   }
