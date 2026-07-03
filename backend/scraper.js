@@ -23,77 +23,52 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
   const cleanCategory = (category || '').toLowerCase();
   const cleanText = (sidePaneText || '').toLowerCase();
 
-  // 1. Restoration — water/fire/flood/mold damage only. No cleaning, auto, art, etc.
-  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold') || cleanNiche.includes('flood')) {
-    // Hard block: non-property restoration types
-    const hardBlock = [
+  // 1. Restoration — home/property only, not auto/art/etc.
+  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') || cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
+    const autoKeywords = [
       'car ', 'auto ', 'vehicle', 'furniture', 'book ', 'art ', 'watch', 'pen ', 'antique',
       'leather', 'classic car', 'engine', 'motor', 'cycle', 'collision',
-      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair',
-      // Block cleaning companies that aren't damage restoration
-      'maid', 'janitorial', 'house cleaning', 'home cleaning', 'office cleaning',
-      'commercial cleaning', 'residential cleaning', 'cleaning service', 'cleaning company',
-      'pressure wash', 'window clean', 'gutter clean', 'pool clean', 'chimney clean'
+      'body shop', 'transmission', 'upholstery', 'dental', 'teeth', 'hair'
     ];
-    if (hardBlock.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
+    if (autoKeywords.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return false;
     }
-
-    // Block if the category is purely "cleaning" with no damage/restoration context
-    if ((cleanCategory.includes('cleaning') || cleanCategory.includes('cleaner')) &&
-        !cleanCategory.includes('restoration') && !cleanCategory.includes('remediation') &&
-        !cleanCategory.includes('damage') && !cleanCategory.includes('mold') &&
-        !cleanCategory.includes('flood') && !cleanCategory.includes('fire') &&
-        !cleanCategory.includes('water damage') && !cleanCategory.includes('disaster')) {
-      return false;
-    }
-
-    // Strong match — accept immediately
+    // If name or category already contains a restoration keyword, accept immediately
     const strongMatch = [
       'water damage', 'fire damage', 'mold', 'remediation', 'restoration',
-      'flood', 'emergency service', 'mitigation', 'disaster', 'sewage', 'smoke damage'
+      'flood', 'emergency service', 'mitigation', 'disaster'
     ];
     if (strongMatch.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) {
       return true;
     }
-
-    // Looser fallback — sidePaneText may mention the keyword
+    // Looser fallback — sidePaneText may contain the keyword even if name doesn't
     const allowed = [
-      'contractor', 'construction', 'builder', 'renovation',
-      'roofing', 'plumbing', 'damage', 'dryer vent'
+      'cleanup', 'contractor', 'construction', 'builder', 'renovation',
+      'roofing', 'plumbing', 'damage', 'carpet cleaning', 'dryer vent'
     ];
     if (cleanText.length > 0 && allowed.some(kw => cleanText.includes(kw))) {
       return true;
     }
-
-    // If sidePaneText is empty, give benefit of the doubt
+    // If sidePaneText is empty (not yet loaded), give the lead the benefit of the doubt
     if (!cleanText) return true;
     return false;
   }
 
-  // 2. Med Spa — aesthetic/medical clinics only. No massage parlors, day spas, wellness spas.
-  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa') || cleanNiche.includes('aesthetic')) {
-    // Hard block: non-medical spa types
-    const hardBlock = [
+  // 2. Med Spa
+  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
+    const disallowed = [
       'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology',
-      'nail salon', 'hair salon', 'barber', 'chiropractor',
-      'day spa', 'wellness spa', 'relaxation spa', 'resort spa', 'hotel spa',
-      'spa & salon', 'salon & spa', 'beauty salon', 'tanning salon'
+      'nail salon', 'hair salon', 'barber', 'chiropractor'
     ];
-    if (hardBlock.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
+    if (disallowed.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) {
       return false;
     }
-
-    // Block any generic "spa" or "massage" that doesn't have medical/aesthetic terms
-    const medicalTerms = ['medical', 'med ', 'medspa', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin', 'botox', 'filler', 'injectable', 'cosmetic'];
-    if (cleanCategory.includes('massage') || cleanName.includes('massage') ||
-        cleanCategory.includes('day spa') || cleanName.includes('day spa') ||
-        cleanCategory.includes('spa') || cleanName.includes('spa')) {
-      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term) || cleanText.includes(term))) {
+    if (cleanCategory.includes('massage') || cleanName.includes('massage')) {
+      const medicalTerms = ['medical', 'med', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin'];
+      if (!medicalTerms.some(term => cleanCategory.includes(term) || cleanName.includes(term))) {
         return false;
       }
     }
-
     return true;
   }
 
@@ -120,7 +95,6 @@ function isNicheAligned(niche, businessName, category, sidePaneText) {
 
   return true;
 }
-
 
 // Normalize phone numbers — strip everything except digits and leading +
 function cleanPhone(phone) {
@@ -440,27 +414,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   continue;
               }
               
-              // Early name-level skip for Restoration — block cleaning companies before clicking
-              if (lowerNiche.includes('restoration') || lowerNiche.includes('water damage') || lowerNiche.includes('fire damage') || lowerNiche.includes('mold') || lowerNiche.includes('flood')) {
-                  const cleaningNames = ['maid', 'janitorial', 'house cleaning', 'home cleaning', 'office cleaning', 'commercial cleaning', 'residential cleaning', 'cleaning service', 'pressure wash', 'window clean', 'gutter clean', 'pool clean', 'chimney clean'];
-                  if (cleaningNames.some(kw => lowerName.includes(kw))) {
-                      log(`⏭️ Skipping ${name} (Cleaning company in Restoration search)`, jobId);
+              // Built-in heuristics for pure Massage Spas if looking for Med Spas
+              if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa')) {
+                  if (lowerName.includes('massage') && !lowerName.match(/med|medical|aesthetic|laser|clinic|beauty/)) {
+                      log(`⏭️ Skipping ${name} (Massage spa found in Med Spa search)`, jobId);
                       continue;
                   }
               }
-
-              // Early name-level skip for Med Spa — block massage, day spa, wellness spa before clicking
-              if (lowerNiche.includes('med spa') || lowerNiche.includes('medspa') || lowerNiche.includes('medical spa') || lowerNiche.includes('aesthetic')) {
-                  const medicalTerms = ['med', 'medical', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin', 'botox', 'filler', 'injectable', 'cosmetic'];
-                  const genericSpaNames = ['massage', 'day spa', 'wellness spa', 'relaxation spa', 'resort spa', 'hotel spa', 'thai spa', 'nail salon', 'hair salon', 'tanning salon', 'beauty salon', 'spa & salon', 'salon & spa'];
-                  if (genericSpaNames.some(kw => lowerName.includes(kw))) {
-                      if (!medicalTerms.some(term => lowerName.includes(term))) {
-                          log(`⏭️ Skipping ${name} (Non-medical spa/massage in Med Spa search)`, jobId);
-                          continue;
-                      }
-                  }
-              }
-
 
               processedNames.add(cleanNameKey);
               foundNewInBatch = true;
@@ -497,11 +457,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
           let paneFound = false;
-          for (let attempt = 0; attempt < 45; attempt++) {
+          for (let attempt = 0; attempt < 25; attempt++) {
               if (attempt === 5 && !paneFound) {
-                  try { await targetItem.evaluate(node => node.click()); } catch {}
-              }
-              if (attempt === 15 && !paneFound) {
+                  // Force a fast fallback click if Google Maps ignored it
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
 
@@ -622,43 +580,41 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 }
             }
 
-            const parsed = await sidePane.evaluate((pane) => {
-               let r = '', v = '';
-               // 1. Try modern layout (div.F7nice)
-               const f7 = pane.querySelector('div.F7nice');
-               if (f7) {
-                   const rSpan = f7.querySelector('span[aria-hidden="true"]');
-                   if (rSpan) r = rSpan.innerText.trim();
-                   
-                   const vSpan = f7.querySelector('span[aria-label*="review"]') || f7.querySelector('span[aria-label*="rating"]');
-                   if (vSpan) {
-                       const match = vSpan.getAttribute('aria-label').match(/([\d,]+)/);
-                       if (match) v = match[1].replace(/,/g, '');
-                   }
-               }
-               // 2. Try aria-labels directly
-               if (!r) {
-                  const labelSpan = pane.querySelector('span[aria-label*="stars"]') || pane.querySelector('div[aria-label*="stars"]');
-                  if (labelSpan) {
-                     const label = labelSpan.getAttribute('aria-label');
-                     const rMatch = label.match(/([\d.]+)\s*star/i);
-                     const vMatch = label.match(/([\d,]+)\s*(?:rating|review)/i);
-                     if (rMatch) r = rMatch[1];
-                     if (vMatch) v = vMatch[1].replace(/,/g, '');
-                  }
-               }
-               // 3. Try old class names
-               if (!r) {
-                  const mw4 = pane.querySelector('span.MW4etd');
-                  if (mw4) r = mw4.innerText.trim();
-                  const uy = pane.querySelector('span.UY7F9');
-                  if (uy) v = uy.innerText.replace(/[^\d]/g, '');
-               }
-               return { r, v };
+            const ratingData = await sidePane.evaluate((pane) => {
+              // Try common classes first
+              const ratingEl = pane.querySelector('span.MW4etd, .ceaeq');
+              const reviewEl = pane.querySelector('span.UY7F9, .dK32cf');
+              
+              if (ratingEl && reviewEl) {
+                return { 
+                  r: ratingEl.innerText.trim(), 
+                  v: reviewEl.innerText.replace(/[^\d]/g, '') 
+                };
+              }
+
+              // Fallback 1: aria-label on star button
+              const starBtn = pane.querySelector('button[aria-label*="star"]');
+              if (starBtn) {
+                const label = starBtn.getAttribute('aria-label');
+                const rMatch = label.match(/([\d.]+)\s*star/i);
+                const vMatch = label.match(/([\d,]+)\s*(?:rating|review)/i);
+                if (rMatch && vMatch) {
+                   return { r: rMatch[1], v: vMatch[1].replace(/,/g, '') };
+                }
+              }
+
+              // Fallback 2: Regex on the main visible text
+              const text = pane.innerText;
+              const rMatch = text.match(/(?:^|\n)([\d.]+)\s*\n?\s*\(([\d,]+)\)/);
+              if (rMatch) {
+                 return { r: rMatch[1], v: rMatch[2].replace(/,/g, '') };
+              }
+
+              return { r: '', v: '' };
             }).catch(() => ({ r: '', v: '' }));
-            
-            if (parsed.r) rating = parsed.r;
-            if (parsed.v) reviews = parsed.v;
+
+            if (ratingData.r) rating = ratingData.r;
+            if (ratingData.v) reviews = ratingData.v;
           } catch { /* optional details */ }
 
           // Clean up phone and website for duplicate checks
