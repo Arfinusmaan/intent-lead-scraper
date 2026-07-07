@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark } from "lucide-react";
+import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark, Upload } from "lucide-react";
 import "./index.css";
 
 export default function App() {
@@ -64,6 +64,7 @@ export default function App() {
       });
       const data = await res.json();
       setJobId(data.jobId);
+      setPage("home");
     } catch (err) {
       console.error("Upload failed", err);
     } finally {
@@ -222,6 +223,12 @@ export default function App() {
               Scanner
             </button>
             <button
+              onClick={() => setPage("upload")}
+              className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${page === "upload" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}
+            >
+              Upload
+            </button>
+            <button
               onClick={() => setPage("history")}
               className={`px-6 py-2 rounded-full text-sm font-medium transition-all ${page === "history" ? "bg-white/10 text-white shadow-sm" : "text-slate-400 hover:text-white"}`}
             >
@@ -344,20 +351,6 @@ export default function App() {
                       <option value="4" className="bg-gray-900">4 Background Workers</option>
                       <option value="5" className="bg-gray-900">5 Background Workers (16GB RAM)</option>
                     </select>
-                  </div>
-                  <div className="flex-1 relative">
-                    <label className="w-full h-14 flex items-center justify-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 rounded-xl cursor-pointer transition-all font-bold text-sm">
-                        {uploadLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Download className="w-4 h-4" />}
-                        {uploadLoading ? "Starting Engine..." : "Direct CSV Enrich"}
-                        <input type="file" accept=".csv" className="hidden" onChange={uploadCSV} disabled={uploadLoading || loading} />
-                    </label>
-                  </div>
-                  <div className="flex-1 relative">
-                    <label className="w-full h-14 flex items-center justify-center gap-2 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 rounded-xl cursor-pointer transition-all font-bold text-sm" title="Upload any CSV to filter leads by their actual Google Maps category — keeps only restoration businesses">
-                        {filterLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Filter className="w-4 h-4" />}
-                        {filterLoading ? "Filtering..." : "Filter by Google Category"}
-                        <input type="file" accept=".csv" className="hidden" onChange={filterGoogleCSV} disabled={filterLoading || loading} />
-                    </label>
                   </div>
                 </div>
               </div>
@@ -542,6 +535,117 @@ export default function App() {
                 </motion.div>
               )}
             </motion.div>
+          ) : page === "upload" ? (
+            <motion.div
+              key="upload"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="max-w-5xl mx-auto w-full flex flex-col gap-10"
+            >
+              {/* Header */}
+              <div className="text-center max-w-2xl mx-auto mt-10">
+                <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-white mb-4">
+                  Bulk Lead Enrichment & Filtering
+                </h1>
+                <p className="text-slate-400 text-lg">
+                  Upload a CSV file to enrich website contact details or filter a list of leads directly against Google Maps profile categories.
+                </p>
+              </div>
+
+              {/* Upload Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-4">
+                
+                {/* Card 1: Direct CSV Enrich */}
+                <div className="glass-panel p-8 rounded-3xl border border-white/10 hover:border-emerald-500/30 transition-all flex flex-col justify-between relative overflow-hidden group">
+                  <div className="absolute top-0 left-0 w-full h-1.5 bg-emerald-500/30 opacity-80" />
+                  <div>
+                    <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-6 border border-emerald-500/20">
+                      <Download className="text-emerald-400 w-6 h-6" />
+                    </div>
+                    <h3 className="text-xl font-bold text-white mb-2">Direct CSV Email Enrichment</h3>
+                    <p className="text-sm text-slate-400 leading-relaxed mb-6">
+                      Upload any CSV containing business websites. The engine will crawl their web pages to extract emails, social accounts, and detect lead intent in the background.
+                    </p>
+
+                    {/* Options */}
+                    <div className="flex flex-col gap-4 mb-8">
+                      <div>
+                        <label className="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-2">Workers</label>
+                        <select
+                          value={workers}
+                          onChange={(e) => setWorkers(parseInt(e.target.value))}
+                          disabled={uploadLoading}
+                          className="w-full h-12 bg-white/5 border border-white/10 rounded-xl px-4 text-white hover:bg-white/10 outline-none transition-all appearance-none text-sm"
+                        >
+                          <option value="1" className="bg-gray-900">1 Background Worker</option>
+                          <option value="2" className="bg-gray-900">2 Background Workers</option>
+                          <option value="3" className="bg-gray-900">3 Background Workers (8GB RAM)</option>
+                          <option value="4" className="bg-gray-900">4 Background Workers</option>
+                          <option value="5" className="bg-gray-900">5 Background Workers (16GB RAM)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-2">Negative Keywords (Optional)</label>
+                        <input
+                          type="text"
+                          placeholder="e.g. school, government"
+                          value={negativeKeywords}
+                          onChange={(e) => setNegativeKeywords(e.target.value)}
+                          disabled={uploadLoading}
+                          className="w-full h-12 bg-white/5 border border-white/10 rounded-xl px-4 text-white placeholder:text-slate-500 outline-none transition-all text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <label className="w-full h-14 flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl cursor-pointer transition-all font-bold text-sm shadow-lg shadow-emerald-500/20 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {uploadLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Upload className="w-4 h-4" />}
+                      {uploadLoading ? "Enriching..." : "Choose CSV & Start Enrichment"}
+                      <input type="file" accept=".csv" className="hidden" onChange={uploadCSV} disabled={uploadLoading || filterLoading} />
+                  </label>
+                </div>
+
+                {/* Card 2: Filter by Google Category */}
+                <div className="glass-panel p-8 rounded-3xl border border-white/10 hover:border-orange-500/30 transition-all flex flex-col justify-between relative overflow-hidden group">
+                  <div className="absolute top-0 left-0 w-full h-1.5 bg-orange-500/30 opacity-80" />
+                  <div>
+                    <div className="w-12 h-12 rounded-2xl bg-orange-500/10 flex items-center justify-center mb-6 border border-orange-500/20">
+                      <Filter className="text-orange-400 w-6 h-6" />
+                    </div>
+                    <h3 className="text-xl font-bold text-white mb-2">Filter by Google Category</h3>
+                    <p className="text-sm text-slate-400 leading-relaxed mb-6">
+                      Upload any CSV with Maps URLs or business names. The system navigates to their profile to confirm if their category aligns with strict restoration standards and drops unrelated businesses.
+                    </p>
+
+                    {/* Options */}
+                    <div className="flex flex-col gap-4 mb-8">
+                      <div>
+                        <label className="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-2">Parallel Workers</label>
+                        <select
+                          value={workers}
+                          onChange={(e) => setWorkers(parseInt(e.target.value))}
+                          disabled={filterLoading}
+                          className="w-full h-12 bg-white/5 border border-white/10 rounded-xl px-4 text-white hover:bg-white/10 outline-none transition-all appearance-none text-sm"
+                        >
+                          <option value="5" className="bg-gray-900">5 parallel browser threads</option>
+                          <option value="10" className="bg-gray-900">10 parallel browser threads</option>
+                          <option value="15" className="bg-gray-900">15 parallel browser threads (Recommended)</option>
+                          <option value="20" className="bg-gray-900">20 parallel browser threads</option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <label className="w-full h-14 flex items-center justify-center gap-2 bg-orange-500 hover:bg-orange-400 text-white rounded-xl cursor-pointer transition-all font-bold text-sm shadow-lg shadow-orange-500/20 disabled:opacity-50 disabled:cursor-not-allowed">
+                      {filterLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Upload className="w-4 h-4" />}
+                      {filterLoading ? "Filtering..." : "Choose CSV & Start Filter"}
+                      <input type="file" accept=".csv" className="hidden" onChange={filterGoogleCSV} disabled={filterLoading || uploadLoading} />
+                  </label>
+                </div>
+
+              </div>
+            </motion.div>
           ) : (
             <motion.div
               key="history"
@@ -554,11 +658,6 @@ export default function App() {
                   <History className="w-8 h-8 text-purple-400" />
                   <h2 className="text-4xl font-extrabold text-white tracking-tight">Mission Archives</h2>
                 </div>
-                <label className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 px-4 py-2.5 rounded-xl cursor-pointer transition-all font-bold text-sm">
-                  {filterLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Filter className="w-4 h-4" />}
-                  {filterLoading ? "Launching..." : "Filter CSV by Google"}
-                  <input type="file" accept=".csv" className="hidden" onChange={filterGoogleCSV} disabled={filterLoading} />
-                </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

@@ -8,7 +8,7 @@ import stream from 'stream';
 import fs from 'fs';
 
 import { scrapeGoogleMaps, enrichCSVList, filterCSVByGoogleCategory } from './scraper.js';
-import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, getCSVFilePath } from './store.js';
+import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, getCSVFilePath, rewriteCSV } from './store.js';
 import { log } from './utils.js';
 
 const app = express();
@@ -96,6 +96,9 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
          createdAt: new Date(),
          stopFlag: false
        });
+       
+       // Write the uploaded CSV to disk immediately so it exists and can be downloaded/viewed
+       rewriteCSV(jobId, leads, 'CSV Upload');
        
        log(`🚀 Started: CSV Enrichment for ${leads.length} leads`, jobId);
        
@@ -470,6 +473,11 @@ app.post('/filter-google', upload.single('file'), (req, res) => {
       }).then((kept) => {
         const job = getJob(jobId);
         if (!job) return;
+        
+        // Save the filtered leads to the store so they show in the UI and are downloadable
+        job.leads = kept;
+        rewriteCSV(jobId, kept, 'Google Filter');
+
         const stats = { total: kept.length, highIntent: kept.filter(l => l.intent === 'HIGH').length };
         updateJob(jobId, { status: job.stopFlag ? 'cancelled' : 'completed', progress: 100, stats });
       }).catch(err => {

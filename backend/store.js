@@ -81,7 +81,7 @@ function flushAppendBuffer(id, niche) {
 // REWRITE FULL CSV (for enrichment updates)
 // Called when a background worker updates an existing lead
 // =========================
-function rewriteCSV(id, leads, niche) {
+export function rewriteCSV(id, leads, niche) {
   if (!leads || leads.length === 0) return;
   const dir = path.join(process.cwd(), 'exports');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });

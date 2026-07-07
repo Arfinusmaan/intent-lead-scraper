@@ -29,6 +29,13 @@ export function isNicheAligned(niche, businessName, category, sidePaneText) {
   if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') ||
       cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
 
+    const STRONG_NAME_SIGNALS = [
+      'water damage', 'fire damage', 'mold remediation', 'mold removal',
+      'flood damage', 'flood restoration', 'smoke damage', 'storm damage',
+      'disaster restoration', 'disaster recovery', 'remediation',
+      'mitigation'
+    ];
+
     // --- STEP 1: HARD BLOCK by name or category ---
     // These indicate clearly non-property businesses — reject immediately.
     const hardBlockName = [
@@ -68,8 +75,12 @@ export function isNicheAligned(niche, businessName, category, sidePaneText) {
       'non-profit', 'government', 'school', 'church',
       'truck repair', 'farm', 'agricultural', 'logging'
     ];
-    if (hardBlockName.some(kw => cleanName.includes(kw))) return false;
-    if (hardBlockCategory.some(kw => cleanCategory.includes(kw))) return false;
+    const hasStrongNameSignal = STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw));
+
+    if (!hasStrongNameSignal) {
+      if (hardBlockName.some(kw => cleanName.includes(kw))) return false;
+      if (hardBlockCategory.some(kw => cleanCategory.includes(kw))) return false;
+    }
 
     // --- STEP 2: GOOGLE CATEGORY — PRIMARY SIGNAL ---
     // If Google Maps assigned a category, trust it fully.
@@ -95,7 +106,10 @@ export function isNicheAligned(niche, businessName, category, sidePaneText) {
       // Category is present — it's the authoritative Google signal.
       // If it matches an accepted restoration category → KEEP
       if (ACCEPTED_CATEGORIES.some(kw => cleanCategory.includes(kw))) return true;
-      // Category is present but is NOT a restoration category → REJECT
+
+      if (STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw))) return true;
+
+      // Category is present but is NOT a restoration category and name lacks strong signals → REJECT
       // This eliminates: guitar stores, general contractors, repair services, etc.
       return false;
     }
@@ -111,13 +125,6 @@ export function isNicheAligned(niche, businessName, category, sidePaneText) {
     ];
     if (BRAND_SIGNALS.some(kw => cleanName.includes(kw))) return true;
 
-    // Name must include a SPECIFIC property-damage term (not just "restoration")
-    const STRONG_NAME_SIGNALS = [
-      'water damage', 'fire damage', 'mold remediation', 'mold removal',
-      'flood damage', 'flood restoration', 'smoke damage', 'storm damage',
-      'disaster restoration', 'disaster recovery', 'remediation',
-      'mitigation'
-    ];
     if (STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw))) return true;
 
     // Pane text loaded — must contain SPECIFIC property damage terms (not just "restoration")
@@ -282,20 +289,12 @@ class WebsiteWorkerPool {
 
 
     // =========================
-    // RAM SAVER: Block images, media, fonts, stylesheets & icons
+    // RAM SAVER: Block only images and media to speed up loads without breaking layout/scripts
     // =========================
     const blockRoute = async (page) => {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        const url = route.request().url();
-        // Block heavy/decorative resources — scripts needed for modern sites
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) return route.abort();
-        // Block icon/analytics CDNs that add zero value
-        if (url.includes('googletagmanager') || url.includes('google-analytics') ||
-            url.includes('hotjar') || url.includes('intercom') || url.includes('typekit') ||
-            url.includes('fonts.googleapis') || url.includes('fonts.gstatic')) {
-          return route.abort();
-        }
+        if (['image', 'media'].includes(type)) return route.abort();
         return route.continue();
       });
     };
@@ -460,49 +459,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     const page = await context.newPage();
     
     // =========================
-    // SPEED: Aggressively block all non-essential resources on Google Maps
-    // Kills: images, icons, map tiles, earth imagery, Street View, stylesheets,
-    // fonts, analytics, tracking, and Google's own CDN decoration.
+    // SPEED: Block only images and media to make Google Maps fast without breaking it
     // =========================
     await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        const url = route.request().url();
-
-        // Block by resource type
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) return route.abort();
-
-        // Block Google's CDN hosts for tiles, earth imagery, Street View, icons
-        const blockedHosts = [
-          'maps.gstatic.com',        // Map tile sprites & icons
-          'khm.googleapis.com',      // Earth/satellite imagery
-          'mt0.googleapis.com',      // Map tiles
-          'mt1.googleapis.com',
-          'mt2.googleapis.com',
-          'mt3.googleapis.com',
-          'geo0.ggpht.com',          // Street View imagery
-          'geo1.ggpht.com',
-          'geo2.ggpht.com',
-          'geo3.ggpht.com',
-          'lh3.googleusercontent.com', // Business photos
-          'lh4.googleusercontent.com',
-          'lh5.googleusercontent.com',
-          'streetviewpixels-pa.googleapis.com',
-          'fonts.googleapis.com',
-          'fonts.gstatic.com',
-          'googletagmanager.com',
-          'google-analytics.com',
-          'analytics.google.com',
-          'doubleclick.net',
-          'googlesyndication.com',
-          'adservice.google.com',
-          'hotjar.com',
-          'intercom.io',
-          'clarity.ms',
-          'facebook.net',
-          'connect.facebook.net',
-        ];
-        if (blockedHosts.some(h => url.includes(h))) return route.abort();
-
+        if (['image', 'media'].includes(type)) return route.abort();
         return route.continue();
     });
     
@@ -1052,43 +1013,7 @@ export async function filterCSVByGoogleCategory(leads, jobId, workerCount = 10, 
   // Shared route blocker for all pages in this context
   await context.route('**/*', (route) => {
     const type = route.request().resourceType();
-    const url = route.request().url();
-
-    // Block by resource type
-    if (['image', 'media', 'font', 'stylesheet'].includes(type)) return route.abort();
-
-    // Block Google's CDN hosts for tiles, earth imagery, Street View, icons
-    const blockedHosts = [
-      'maps.gstatic.com',        // Map tile sprites & icons
-      'khm.googleapis.com',      // Earth/satellite imagery
-      'mt0.googleapis.com',      // Map tiles
-      'mt1.googleapis.com',
-      'mt2.googleapis.com',
-      'mt3.googleapis.com',
-      'geo0.ggpht.com',          // Street View imagery
-      'geo1.ggpht.com',
-      'geo2.ggpht.com',
-      'geo3.ggpht.com',
-      'lh3.googleusercontent.com', // Business photos
-      'lh4.googleusercontent.com',
-      'lh5.googleusercontent.com',
-      'streetviewpixels-pa.googleapis.com',
-      'fonts.googleapis.com',
-      'fonts.gstatic.com',
-      'googletagmanager.com',
-      'google-analytics.com',
-      'analytics.google.com',
-      'doubleclick.net',
-      'googlesyndication.com',
-      'adservice.google.com',
-      'hotjar.com',
-      'intercom.io',
-      'clarity.ms',
-      'facebook.net',
-      'connect.facebook.net',
-    ];
-    if (blockedHosts.some(h => url.includes(h))) return route.abort();
-
+    if (['image', 'media'].includes(type)) return route.abort();
     return route.continue();
   });
 
