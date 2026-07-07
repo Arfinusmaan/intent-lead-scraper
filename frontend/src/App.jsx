@@ -18,6 +18,7 @@ export default function App() {
   const [mode, setMode] = useState("hybrid");
   const [workers, setWorkers] = useState(3);
   const [uploadLoading, setUploadLoading] = useState(false);
+  const [filterLoading, setFilterLoading] = useState(false);
   
   const [history, setHistory] = useState([]);
   const [csvSavedToDisk, setCsvSavedToDisk] = useState(false);
@@ -67,6 +68,30 @@ export default function App() {
       console.error("Upload failed", err);
     } finally {
       setUploadLoading(false);
+      e.target.value = null;
+    }
+  };
+
+  const filterGoogleCSV = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFilterLoading(true);
+    setJob(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("workers", workers); // use the same worker count setting
+    try {
+      const res = await fetch("http://localhost:3001/filter-google", {
+        method: "POST",
+        body: formData,
+      });
+      const data = await res.json();
+      setJobId(data.jobId);
+      setPage("home");
+    } catch (err) {
+      console.error("Filter failed", err);
+    } finally {
+      setFilterLoading(false);
       e.target.value = null;
     }
   };
@@ -517,9 +542,16 @@ export default function App() {
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
             >
-              <div className="flex items-center gap-4 mb-10">
-                <History className="w-8 h-8 text-purple-400" />
-                <h2 className="text-4xl font-extrabold text-white tracking-tight">Mission Archives</h2>
+              <div className="flex items-center justify-between gap-4 mb-10">
+                <div className="flex items-center gap-4">
+                  <History className="w-8 h-8 text-purple-400" />
+                  <h2 className="text-4xl font-extrabold text-white tracking-tight">Mission Archives</h2>
+                </div>
+                <label className="flex items-center gap-2 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 px-4 py-2.5 rounded-xl cursor-pointer transition-all font-bold text-sm">
+                  {filterLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Filter className="w-4 h-4" />}
+                  {filterLoading ? "Launching..." : "Filter CSV by Google"}
+                  <input type="file" accept=".csv" className="hidden" onChange={filterGoogleCSV} disabled={filterLoading} />
+                </label>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

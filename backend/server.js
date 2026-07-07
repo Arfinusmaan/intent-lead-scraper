@@ -7,7 +7,7 @@ import csvParser from 'csv-parser';
 import stream from 'stream';
 import fs from 'fs';
 
-import { scrapeGoogleMaps, enrichCSVList } from './scraper.js';
+import { scrapeGoogleMaps, enrichCSVList, filterCSVByGoogleCategory } from './scraper.js';
 import { createJob, getJob, updateJob, setStopFlag, setPauseFlag, deleteJob, loadJobsFromDisk, jobs, getCSVFilePath } from './store.js';
 import { log } from './utils.js';
 
@@ -21,6 +21,45 @@ app.use(bodyParser.json());
 
 // Initialize store from disk
 loadJobsFromDisk();
+
+// =========================
+// UNIVERSAL CSV COLUMN AUTO-DETECTOR
+// Handles any column name format — exact, partial, case-insensitive
+// =========================
+function detectCol(row, ...candidates) {
+  const keys = Object.keys(row);
+  for (const candidate of candidates) {
+    const c = candidate.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const match = keys.find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '') === c);
+    if (match && row[match]) return row[match].trim();
+  }
+  // Partial match fallback
+  for (const candidate of candidates) {
+    const c = candidate.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const match = keys.find(k => {
+      const kn = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+      return kn.includes(c) || c.includes(kn);
+    });
+    if (match && row[match]) return row[match].trim();
+  }
+  return '';
+}
+
+function parseLead(data) {
+  return {
+    business_name: detectCol(data, 'Name', 'Business Name', 'Company Name', 'Company', 'BusinessName', 'business_name'),
+    phone:         detectCol(data, 'Phone', 'Phone Number', 'PhoneNumber', 'Phone number', 'Contact', 'Tel', 'phone'),
+    website:       detectCol(data, 'Website', 'Web', 'URL', 'website', 'Site'),
+    maps_url:      detectCol(data, 'Maps Link', 'Maps URL', 'Google Maps', 'MapsUrl', 'maps_url', 'GoogleMaps'),
+    primary_email: detectCol(data, 'Primary Email', 'Email', 'EmailAddress', 'primary_email', 'E-mail'),
+    rating:        detectCol(data, 'Rating', 'Stars', 'rating'),
+    reviews:       detectCol(data, 'Reviews', 'Review Count', 'ReviewCount', 'reviews'),
+    intent:        detectCol(data, 'Intent', 'intent') || 'LOW',
+    city:          detectCol(data, 'City', 'Location', 'Area', 'city'),
+    address:       detectCol(data, 'Address', 'Street', 'address'),
+    score:         detectCol(data, 'Lead Score', 'Score', 'score') || 0,
+  };
+}
 
 // =========================
 // CSV UPLOAD & ENRICHMENT
@@ -40,17 +79,8 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
   bufferStream
     .pipe(csvParser())
     .on('data', (data) => {
-       const lead = {
-         business_name: data['Company Name'] || data.Company || data.Name || data.business_name || '',
-         phone: data['Phone number'] || data.Phone || data.phone || '',
-         website: data.website || data.Website || '',
-         primary_email: data['Primary Email'] || data.primary_email || '',
-         rating: data.Rating || data.rating || '',
-         reviews: data.Review || data.Reviews || data.reviews || '',
-         intent: data.Intent || data.intent || 'LOW',
-         city: data.City || data.city || '',
-       };
-       leads.push(lead);
+       const lead = parseLead(data);
+       if (lead.business_name) leads.push(lead);
     })
     .on('end', () => {
        createJob(jobId, {
@@ -218,18 +248,18 @@ app.get('/csv/:id', (req, res) => {
 
   // ✅ PRIMARY PATH: job is in memory and has leads
   if (job && job.leads && job.leads.length > 0) {
-    const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+    const headers = `"Name","Phone","Website","Maps Link","Primary Email","Rating","Reviews","Intent","Lead Score","City","Niche"\n`;
 
     const formatRow = (l) => [
       l.business_name || '',
       l.phone || '',
       l.website || '',
+      l.maps_url || '',
       l.primary_email || '',
       l.rating || '',
       l.reviews || '',
       l.intent || '',
       l.score || '',
-      l.website_quality || '',
       l.city || '',
       job.niche || ''
     ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
@@ -292,9 +322,6 @@ app.get('/history', (req, res) => {
   );
 });
 
-// =========================
-// STOP
-// =========================
 // =========================
 // STOP
 // =========================
@@ -392,6 +419,66 @@ app.post('/pin/:id', (req, res) => {
   
   updateJob(req.params.id, { pinned: !job.pinned });
   res.json({ success: true, pinned: !job.pinned });
+});
+
+// =========================
+// GOOGLE CATEGORY FILTER (from uploaded CSV)
+// =========================
+app.post('/filter-google', upload.single('file'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  const jobId = nanoid();
+  const leads = [];
+
+  const bufferStream = new stream.PassThrough();
+  bufferStream.end(req.file.buffer);
+
+  bufferStream
+    .pipe(csvParser())
+    .on('data', (data) => {
+      const lead = parseLead(data);
+      if (lead.business_name) leads.push(lead);
+    })
+    .on('end', () => {
+      createJob(jobId, {
+        niche: 'Google Filter',
+        location: 'From CSV',
+        filterType: 'all',
+        status: 'running',
+        progress: 0,
+        leads: [],
+        logs: [],
+        currentCity: 'Starting...',
+        createdAt: new Date(),
+        stopFlag: false
+      });
+
+      log(`🔍 Started Google Category Filter for ${leads.length} leads`, jobId);
+
+      const workers = parseInt(req.body.workers) || 10;
+      filterCSVByGoogleCategory(leads, jobId, workers, (progressData) => {
+        const job = getJob(jobId);
+        if (!job || job.stopFlag) return;
+        if (typeof progressData === 'number') {
+          updateJob(jobId, { progress: progressData });
+        } else {
+          updateJob(jobId, {
+            progress: progressData.progress ?? job.progress,
+            currentCity: progressData.city ?? job.currentCity
+          });
+        }
+      }).then((kept) => {
+        const job = getJob(jobId);
+        if (!job) return;
+        const stats = { total: kept.length, highIntent: kept.filter(l => l.intent === 'HIGH').length };
+        updateJob(jobId, { status: job.stopFlag ? 'cancelled' : 'completed', progress: 100, stats });
+      }).catch(err => {
+        log(`❌ Filter error: ${err.message}`, jobId);
+        updateJob(jobId, { status: 'failed', error: err.message });
+      });
+
+      res.json({ jobId });
+    });
 });
 
 app.listen(PORT, () => {

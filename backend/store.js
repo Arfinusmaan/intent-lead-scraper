@@ -56,7 +56,7 @@ function flushAppendBuffer(id, niche) {
   const file = path.join(dir, `leads-${id}.csv`);
   
   if (!fs.existsSync(file)) {
-    const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+    const headers = `"Name","Phone","Website","Maps Link","Primary Email","Rating","Reviews","Intent","Lead Score","City","Niche"\n`;
     fs.writeFileSync(file, headers);
   }
   
@@ -64,12 +64,12 @@ function flushAppendBuffer(id, niche) {
     l.business_name || '',
     l.phone || '',
     l.website || '',
+    l.maps_url || '',
     l.primary_email || '',
     l.rating || '',
     l.reviews || '',
     l.intent || '',
     l.score || '',
-    l.website_quality || '',
     l.city || '',
     niche || ''
   ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n') + '\n';
@@ -87,18 +87,18 @@ function rewriteCSV(id, leads, niche) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const file = path.join(dir, `leads-${id}.csv`);
-  const headers = `"Name","Phone","Website","Primary Email","Rating","Reviews","Intent","Lead Score","Website Quality","City","Niche"\n`;
+  const headers = `"Name","Phone","Website","Maps Link","Primary Email","Rating","Reviews","Intent","Lead Score","City","Niche"\n`;
 
   const rows = leads.map(l => [
     l.business_name || '',
     l.phone || '',
     l.website || '',
+    l.maps_url || '',
     l.primary_email || '',
     l.rating || '',
     l.reviews || '',
     l.intent || '',
     l.score || '',
-    l.website_quality || '',
     l.city || '',
     niche || ''
   ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',')).join('\n') + '\n';
