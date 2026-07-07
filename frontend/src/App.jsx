@@ -352,6 +352,13 @@ export default function App() {
                         <input type="file" accept=".csv" className="hidden" onChange={uploadCSV} disabled={uploadLoading || loading} />
                     </label>
                   </div>
+                  <div className="flex-1 relative">
+                    <label className="w-full h-14 flex items-center justify-center gap-2 bg-orange-500/10 hover:bg-orange-500/20 border border-orange-500/30 text-orange-400 rounded-xl cursor-pointer transition-all font-bold text-sm" title="Upload any CSV to filter leads by their actual Google Maps category — keeps only restoration businesses">
+                        {filterLoading ? <Loader2 className="animate-spin w-4 h-4"/> : <Filter className="w-4 h-4" />}
+                        {filterLoading ? "Filtering..." : "Filter by Google Category"}
+                        <input type="file" accept=".csv" className="hidden" onChange={filterGoogleCSV} disabled={filterLoading || loading} />
+                    </label>
+                  </div>
                 </div>
               </div>
 

@@ -455,7 +455,7 @@ app.post('/filter-google', upload.single('file'), (req, res) => {
 
       log(`🔍 Started Google Category Filter for ${leads.length} leads`, jobId);
 
-      const workers = parseInt(req.body.workers) || 10;
+      const workers = Math.max(12, parseInt(req.body.workers) || 12);
       filterCSVByGoogleCategory(leads, jobId, workers, (progressData) => {
         const job = getJob(jobId);
         if (!job || job.stopFlag) return;
