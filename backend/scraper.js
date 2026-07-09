@@ -49,6 +49,23 @@ function cleanPhone(phone) {
   return phone.replace(/[^\d+\-()\s]/g, '').trim();
 }
 
+// Checks if the loaded pane title matches the clicked business name
+function matchesClickedName(paneTitle, clickedName) {
+    if (!paneTitle || !clickedName) return false;
+    const cleanPane = paneTitle.toLowerCase().trim();
+    const cleanName = clickedName.toLowerCase().trim();
+    
+    if (cleanPane.includes(cleanName) || cleanName.includes(cleanPane)) return true;
+    
+    const commonWords = new Set(['of', 'and', 'the', 'in', 'on', 'at', 'for', 'co', 'inc', 'llc', 'corp', 'services', 'service', 'company', 'restoration']);
+    const nameWords = cleanName.split(/[^a-z0-9]+/).filter(w => w.length >= 2 && !commonWords.has(w));
+    if (nameWords.length > 0) {
+        return nameWords.some(word => cleanPane.includes(word));
+    }
+    
+    return cleanPane.slice(0, 4) === cleanName.slice(0, 4);
+}
+
 // =========================
 // WEBSITE WORKER POOL (RAM OPTIMIZED)
 // =========================
@@ -478,14 +495,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                       }
                   }
 
-                  try { 
-                      await targetItem.scrollIntoViewIfNeeded(); 
-                      await page.waitForTimeout(100); 
-                  } catch {}
-                  
                   try {
-                      // Click top-left of the card to avoid clicking the Website / Directions buttons
-                      await targetItem.click({ position: { x: 12, y: 12 }, timeout: 1500 });
+                      // Click top-left of the card with force:true to bypass stability delays
+                      await targetItem.click({ position: { x: 12, y: 12 }, force: true, timeout: 1500 });
                   } catch {
                      try { 
                          // Robust fallback click using JS to bypass any visible overlay
@@ -496,13 +508,13 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
           let paneFound = false;
-          // 20 attempts × 150ms = max 3s wait. Faster polling = fewer missed panes.
-          for (let attempt = 0; attempt < 20; attempt++) {
+          // Increased to 30 attempts × 200ms = max 6s wait. Prevents desync under parallel CPU load.
+          for (let attempt = 0; attempt < 30; attempt++) {
               if (attempt === 4 && !paneFound) {
-                  // Force keyboard re-click if pane hasn't responded after 600ms
+                  // Force keyboard re-click if pane hasn't responded after 800ms
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
-              if (attempt === 10 && !paneFound) {
+              if (attempt === 12 && !paneFound) {
                   // Second attempt: evaluate click directly in browser context
                   try { await targetItem.evaluate(node => node.click()); } catch {}
               }
@@ -524,27 +536,25 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
                   return '';
               }).catch(() => '');
-              
-              if (paneTitle && paneTitle !== lastPaneTitle) {
+
+              const isDifferent = paneTitle && paneTitle !== lastPaneTitle;
+              const matchesName = matchesClickedName(paneTitle, name);
+
+              // Correct pane loaded (different title + matches clicked name)
+              if (isDifferent && matchesName) {
                   paneFound = true;
                   lastPaneTitle = paneTitle;
                   break;
               }
 
-              // Franchise/chain fallback: pane title matches our target name
-              // even if it's the same text as lastPaneTitle (two branches of same chain)
-              const paneLower = paneTitle.toLowerCase().trim();
-              const nameLower = name.toLowerCase().trim();
-              const nameAnchor = nameLower.split(/\s+/).slice(0, 3).join(' ');
-              if (paneTitle && attempt > 2 && (
-                nameLower.includes(paneLower) || paneLower.includes(nameLower) || paneLower.includes(nameAnchor)
-              )) {
+              // Back-to-back franchise fallback: same brand title but we gave it 3 attempts (600ms) to load/refresh
+              if (matchesName && attempt > 2) {
                   paneFound = true;
                   lastPaneTitle = paneTitle;
                   break;
               }
               
-              await page.waitForTimeout(150);
+              await page.waitForTimeout(200);
           }
           if (!paneFound) {
               log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
@@ -577,35 +587,42 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               sidePane = page.locator('div[role="main"]').first();
           }
 
-          // CRITICAL FIX: Avoid grabbing stale details from previous pane.
-          // If the phone, website or address is exactly identical to the previous scraped lead,
-          // it is extremely likely that the pane hasn't updated yet. We wait and re-read.
-          let phone = "";
-          let website = "";
-          let address = "";
-          let detailsUpdated = false;
-
-          for (let attempt = 0; attempt < 5; attempt++) {
-              phone = await sidePane.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
-              website = await sidePane.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
-              address = await sidePane.locator('button[data-item-id="address"]').first().textContent({ timeout: 500 }).catch(() => "");
-
-              const phoneClean = cleanPhone(phone).replace(/[^\d]/g, '');
-              const websiteClean = website ? website.toLowerCase().trim().replace('www.', '') : '';
-              const addrClean = (address || '').trim();
-
-              // Only consider stale if BOTH phone AND website match the previous lead
-              // (address alone is too unreliable — offices share buildings)
-              const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
-              const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
-
-              if (phoneStale && websiteStale) {
-                  await page.waitForTimeout(400);
-              } else {
-                  detailsUpdated = true;
-                  break;
-              }
-          }
+           // CRITICAL FIX: Avoid grabbing stale details from previous pane.
+           // If the phone, website or address is exactly identical to the previous scraped lead,
+           // it is extremely likely that the pane hasn't updated yet. We wait and re-read.
+           let phone = "";
+           let website = "";
+           let address = "";
+           let detailsUpdated = false;
+ 
+           for (let attempt = 0; attempt < 5; attempt++) {
+               const phoneLocator = sidePane.locator('button[data-item-id^="phone:tel:"]').first();
+               const webLocator = sidePane.locator('a[data-item-id="authority"]').first();
+               const addrLocator = sidePane.locator('button[data-item-id="address"]').first();
+ 
+               // Check if elements exist in DOM before querying to avoid 500ms Playwright wait times
+               phone = (await phoneLocator.count() > 0) ? await phoneLocator.textContent().catch(() => "") : "";
+               website = (await webLocator.count() > 0) ? await webLocator.getAttribute("href").catch(() => "") : "";
+               address = (await addrLocator.count() > 0) ? await addrLocator.textContent().catch(() => "") : "";
+ 
+               const phoneClean = cleanPhone(phone).replace(/[^\d]/g, '');
+               const websiteClean = website ? website.toLowerCase().trim().replace('www.', '') : '';
+ 
+               // Only consider stale if BOTH phone AND website match the previous lead
+               // (address alone is too unreliable — offices share buildings)
+               const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
+               const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
+ 
+               if (phoneStale && websiteStale) {
+                   await page.waitForTimeout(400);
+               } else if (!phoneClean && !websiteClean && attempt < 3) {
+                   // If both are empty, the pane details might still be loading in the DOM. Wait and retry.
+                   await page.waitForTimeout(300);
+               } else {
+                   detailsUpdated = true;
+                   break;
+               }
+           }
 
           let rating = '';
           let reviews = '';
