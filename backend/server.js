@@ -47,17 +47,22 @@ function detectCol(row, ...candidates) {
 
 function parseLead(data) {
   return {
-    business_name: detectCol(data, 'Name', 'Business Name', 'Company Name', 'Company', 'BusinessName', 'business_name'),
-    phone:         detectCol(data, 'Phone', 'Phone Number', 'PhoneNumber', 'Phone number', 'Contact', 'Tel', 'phone'),
-    website:       detectCol(data, 'Website', 'Web', 'URL', 'website', 'Site'),
-    maps_url:      detectCol(data, 'Maps Link', 'Maps URL', 'Google Maps', 'MapsUrl', 'maps_url', 'GoogleMaps'),
-    primary_email: detectCol(data, 'Primary Email', 'Email', 'EmailAddress', 'primary_email', 'E-mail'),
-    rating:        detectCol(data, 'Rating', 'Stars', 'rating'),
-    reviews:       detectCol(data, 'Reviews', 'Review Count', 'ReviewCount', 'reviews'),
-    intent:        detectCol(data, 'Intent', 'intent') || 'LOW',
-    city:          detectCol(data, 'City', 'Location', 'Area', 'city'),
-    address:       detectCol(data, 'Address', 'Street', 'address'),
-    score:         detectCol(data, 'Lead Score', 'Score', 'score') || 0,
+    business_name:          detectCol(data, 'Name', 'Business Name', 'Company Name', 'Company', 'BusinessName', 'business_name'),
+    phone:                  detectCol(data, 'Phone', 'Phone Number', 'PhoneNumber', 'Phone number', 'Contact', 'Tel', 'phone'),
+    website:                detectCol(data, 'Website', 'Web', 'URL', 'website', 'Site'),
+    maps_url:               detectCol(data, 'Maps Link', 'Maps URL', 'Google Maps', 'MapsUrl', 'maps_url', 'GoogleMaps'),
+    primary_email:          detectCol(data, 'Primary Email', 'Email', 'EmailAddress', 'primary_email', 'E-mail'),
+    rating:                 detectCol(data, 'Rating', 'Stars', 'rating'),
+    reviews:                detectCol(data, 'Reviews', 'Review Count', 'ReviewCount', 'reviews'),
+    intent:                 detectCol(data, 'Intent', 'intent') || 'LOW',
+    city:                   detectCol(data, 'City', 'Location', 'Area', 'city'),
+    address:                detectCol(data, 'Address', 'Street', 'address'),
+    score:                  detectCol(data, 'Lead Score', 'Score', 'score') || 0,
+    // Niche Intelligence fields
+    niche_match_score:      detectCol(data, 'Niche Match Score', 'NicheMatchScore', 'niche_match_score') || '',
+    classification_status:  detectCol(data, 'Classification', 'Class Status', 'classification_status') || '',
+    classification_reason:  detectCol(data, 'Classification Reason', 'ClassReason', 'classification_reason') || '',
+    sms_ready_tier:         detectCol(data, 'SMS Ready', 'SmsReadyTier', 'sms_ready_tier') || '',
   };
 }
 
@@ -251,7 +256,7 @@ app.get('/csv/:id', (req, res) => {
 
   // ✅ PRIMARY PATH: job is in memory and has leads
   if (job && job.leads && job.leads.length > 0) {
-    const headers = `"Name","Phone","Website","Maps Link","Primary Email","Rating","Reviews","Intent","Lead Score","City","Niche"\n`;
+    const headers = `"Name","Phone","Website","Maps Link","Primary Email","Rating","Reviews","Intent","Lead Score","City","Niche","Niche Match Score","SMS Ready","Classification","Classification Reason"\n`;
 
     const formatRow = (l) => [
       l.business_name || '',
@@ -264,7 +269,11 @@ app.get('/csv/:id', (req, res) => {
       l.intent || '',
       l.score || '',
       l.city || '',
-      job.niche || ''
+      job.niche || '',
+      l.niche_match_score ?? '',
+      l.sms_ready_tier || '',
+      l.classification_status || '',
+      l.classification_reason || '',
     ].map(f => `"${String(f).replace(/"/g, '""')}"`).join(',');
 
     const withEmail = job.leads.filter(l => l.primary_email);

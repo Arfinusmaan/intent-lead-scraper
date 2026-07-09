@@ -6,191 +6,39 @@ import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
 import { scoreLead } from "./intentScorer.js";
+import { classifyBusiness, reclassifyWithWebsite, getSmsReadyTier } from "./nicheClassifier.js";
 
 function isSharedPlatform(domain) {
   if (!domain) return false;
   const shared = [
-    'facebook.com', 'instagram.com', 'yelp.com', 'google.com', 'twitter.com', 
+    'facebook.com', 'instagram.com', 'yelp.com', 'google.com', 'twitter.com',
     'linkedin.com', 'youtube.com', 'manta.com', 'yellowpages.com', 'foursquare.com',
     'mapquest.com', 'tripadvisor.com', 'groupon.com', 'angis.com', 'homeadvisor.com'
   ];
   return shared.some(s => domain.includes(s));
 }
 
+// Franchise brand roots whose domains are shared across many legitimate locations.
+// Multiple SERVPRO/PaulDavis locations share the same root domain — never dedup them.
+const FRANCHISE_DOMAIN_ROOTS = [
+  'servpro', 'pauldavis', 'pauldasvis', 'rainbow restoration', 'rainbowrestoration',
+  '911restoration', 'puroclean', 'restorationmaster', 'servicemaster',
+  'firstonsite', 'rytech', 'restoration1', 'jenkinsrestorations',
+  'blackmonmooring', 'bmscat', 'blusky', 'dkiservices',
+];
+
+function isFranchiseDomain(domain) {
+  if (!domain) return false;
+  const d = domain.toLowerCase();
+  return FRANCHISE_DOMAIN_ROOTS.some(fr => d.includes(fr));
+}
+
+// isNicheAligned is replaced by classifyBusiness from nicheClassifier.js
+// The new classifier returns { score, reason, status } instead of a boolean.
+// Kept as a thin compatibility shim used in filterCSVByGoogleCategory for now.
 export function isNicheAligned(niche, businessName, category, sidePaneText) {
-  const cleanNiche = niche.toLowerCase().trim();
-  const cleanName = businessName.toLowerCase();
-  const cleanCategory = (category || '').toLowerCase();
-  const cleanText = (sidePaneText || '').toLowerCase();
-
-  // =========================
-  // 1. RESTORATION (Property Damage only — water, fire, flood, mold)
-  // =========================
-  if (cleanNiche.includes('restoration') || cleanNiche.includes('water damage') ||
-      cleanNiche.includes('fire damage') || cleanNiche.includes('mold')) {
-
-    const STRONG_NAME_SIGNALS = [
-      'water damage', 'fire damage', 'mold remediation', 'mold removal',
-      'flood damage', 'flood restoration', 'smoke damage', 'storm damage',
-      'disaster restoration', 'disaster recovery', 'remediation',
-      'mitigation'
-    ];
-
-    // --- STEP 1: HARD BLOCK by name or category ---
-    // These indicate clearly non-property businesses — reject immediately.
-    const hardBlockName = [
-      'auto ', 'automotive', 'car ', 'vehicle', 'motorcycle', 'boat ', 'marine ',
-      'furniture', 'upholstery', 'antique', 'art ', 'artwork', 'canvas',
-      'book ', 'paper ', 'photo', 'photograph', 'watch', 'clock', 'jewelry', 'jewellery',
-      'leather', 'shoe ', 'boot ', 'clothing', 'textile', 'fabric',
-      'dental', 'teeth', 'tooth', 'hair ', 'salon', 'spa ',
-      'body shop', 'collision', 'transmission',
-      'computer', 'electronics', 'screen repair', 'phone repair',
-      'food ', 'kitchen', 'restaurant', 'catering',
-      'lawn ', 'garden', 'landscap',
-      'pool ', 'pest ', 'janitorial',
-      'roofing', 'roofer', 'gutter', 'siding', 'masonry', 'chimney', 'brick',
-      'plumbing', 'hvac', 'electrical', 'electrician', 'flooring',
-      'painting', 'painter', 'remodel', 'remodeling', 'renovation',
-      'excavat', 'septic', 'well drill', 'insulation', 'handyman',
-      'tree service', 'arborist', 'towing', 'locksmith', 'moving'
-    ];
-    const hardBlockCategory = [
-      'auto body shop', 'auto repair', 'car repair', 'collision', 'motorcycle',
-      'furniture store', 'antique store', 'art gallery', 'art restoration',
-      'painting', 'painter', 'roofing', 'roofer', 'gutter', 'masonry',
-      'plumber', 'plumbing', 'hvac', 'electrician', 'electrical contractor',
-      'flooring', 'remodeler', 'general contractor', 'home builder',
-      'landscaping', 'lawn care', 'tree service', 'pest control',
-      'janitorial', 'cleaning service', 'pressure washing',
-      'dental', 'hair salon', 'nail salon', 'spa', 'massage',
-      'restaurant', 'food', 'hotel', 'bed & breakfast', 'inn',
-      'excavating', 'septic', 'insulation contractor', 'well drilling',
-      'handyman', 'towing', 'locksmith', 'moving', 'storage',
-      'real estate', 'property management', 'home inspector',
-      'auto parts', 'tire', 'transmission', 'engine repair',
-      'electronics', 'phone repair', 'computer repair',
-      'brewery', 'winery', 'distillery', 'coffee shop', 'bakery',
-      'gym', 'fitness', 'yoga', 'counselor', 'therapist',
-      'non-profit', 'government', 'school', 'church',
-      'truck repair', 'farm', 'agricultural', 'logging'
-    ];
-    const hasStrongNameSignal = STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw));
-
-    if (!hasStrongNameSignal) {
-      if (hardBlockName.some(kw => cleanName.includes(kw))) return false;
-      if (hardBlockCategory.some(kw => cleanCategory.includes(kw))) return false;
-    }
-
-    // --- STEP 2: GOOGLE CATEGORY — PRIMARY SIGNAL ---
-    // If Google Maps assigned a category, trust it fully.
-    // Only these exact restoration-related categories are accepted.
-    const ACCEPTED_CATEGORIES = [
-      'water damage restoration',
-      'fire damage restoration',
-      'mold remediation',
-      'mold removal',
-      'flood restoration',
-      'smoke damage restoration',
-      'storm damage restoration',
-      'disaster restoration',
-      'disaster recovery',
-      'restoration service',
-      'remediation service',
-      'water mitigation',
-      'fire restoration',
-      'environmental remediation',
-      'biohazard remediation'   // biohazard is adjacent/acceptable
-    ];
-    if (cleanCategory.length > 0) {
-      // Category is present — it's the authoritative Google signal.
-      // If it matches an accepted restoration category → KEEP
-      if (ACCEPTED_CATEGORIES.some(kw => cleanCategory.includes(kw))) return true;
-
-      if (STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw))) return true;
-
-      // Category is present but is NOT a restoration category and name lacks strong signals → REJECT
-      // This eliminates: guitar stores, general contractors, repair services, etc.
-      return false;
-    }
-
-    // --- STEP 3: NO CATEGORY LOADED — fall back to name + pane text signals ---
-    // Only reach here if Google Maps didn't provide a category (rare).
-
-    // Known franchise brands that are always property restoration
-    const BRAND_SIGNALS = [
-      'servpro', 'belfor', 'servicemaster', 'paul davis', 'rainbow restoration',
-      'steamatic', '911 restoration', 'bnr restoration', 'puroclean',
-      'first onsite', 'rytech', 'lemarg', 'restoration 1'
-    ];
-    if (BRAND_SIGNALS.some(kw => cleanName.includes(kw))) return true;
-
-    if (STRONG_NAME_SIGNALS.some(kw => cleanName.includes(kw))) return true;
-
-    // Pane text loaded — must contain SPECIFIC property damage terms (not just "restoration")
-    if (cleanText.length > 50) {
-      const PANE_DAMAGE_SIGNALS = [
-        'water damage', 'fire damage', 'mold', 'flood damage', 'smoke damage',
-        'storm damage', 'remediation', 'mitigation'
-      ];
-      // "restoration" alone is NOT enough — car/art restoration also uses that word
-      return PANE_DAMAGE_SIGNALS.some(kw => cleanText.includes(kw));
-    }
-
-    // No category, no pane, no strong name signal → REJECT
-    return false;
-  }
-
-  // =========================
-  // 2. Med Spa
-  // =========================
-  if (cleanNiche.includes('med spa') || cleanNiche.includes('medspa') || cleanNiche.includes('medical spa')) {
-    const reject = [
-      'massage parlour', 'massage therapist', 'thai massage', 'foot massage', 'reflexology',
-      'nail salon', 'hair salon', 'barber', 'chiropractor'
-    ];
-    if (reject.some(kw => cleanCategory.includes(kw) || cleanName.includes(kw))) return false;
-    if (cleanCategory.includes('massage') || cleanName.includes('massage')) {
-      const medTerms = ['medical', 'med', 'aesthetic', 'laser', 'clinic', 'plastic', 'dermatology', 'skin'];
-      if (!medTerms.some(t => cleanCategory.includes(t) || cleanName.includes(t))) return false;
-    }
-    return true;
-  }
-
-  // =========================
-  // 3. Roofing
-  // =========================
-  if (cleanNiche.includes('roofing') || cleanNiche.includes('roofer')) {
-    const reject = ['roof bar', 'restaurant', 'hotel', 'lounge', 'rooftop', 'roof top'];
-    if (reject.some(kw => cleanName.includes(kw) || cleanCategory.includes(kw))) return false;
-    return true;
-  }
-
-  // =========================
-  // 4. Generic fallback
-  // =========================
-  const noiseWords = new Set(['in', 'service', 'services', 'company', 'and', 'near', 'me', 'the', 'of', 'for', 'a', 'an', 'agency', 'firm']);
-  const nicheWords = cleanNiche.split(/\s+/).filter(w => w.length > 2 && !noiseWords.has(w));
-  
-  if (nicheWords.length > 0) {
-    // If ANY of the core niche words appear in the business name or Google category, keep it
-    if (nicheWords.some(w => cleanName.includes(w) || cleanCategory.includes(w))) {
-      return true;
-    }
-    
-    // If the Google side pane text loaded, check if the niche words appear there
-    if (cleanText.length > 20) {
-      if (nicheWords.some(w => cleanText.includes(w))) return true;
-      return false; // Pane loaded, but no niche words found
-    }
-    
-    // If pane didn't load, and name/category didn't match, REJECT. 
-    // Do not blindly accept just because it failed to load.
-    return false;
-  }
-
-  // If the user's search was literally just noise words (e.g., "company"), accept it
-  return true;
+  const result = classifyBusiness(niche, businessName, category, sidePaneText, '');
+  return result.status === 'accepted';
 }
 
 // Normalize phone numbers — strip everything except digits and leading +
@@ -294,7 +142,8 @@ class WebsiteWorkerPool {
     const blockRoute = async (page) => {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        if (['image', 'media'].includes(type)) return route.abort();
+        // Block images, media AND fonts — fonts can add 1-2s to slow sites
+        if (['image', 'media', 'font'].includes(type)) return route.abort();
         return route.continue();
       });
     };
@@ -304,11 +153,14 @@ class WebsiteWorkerPool {
     try {
       homePage = await this.context.newPage();
       await blockRoute(homePage);
-      await homePage.goto(website, { timeout: 8000, waitUntil: "domcontentloaded" });
-      
+      await homePage.goto(website, { timeout: 6000, waitUntil: "domcontentloaded" });
+
       const html = await homePage.content();
       const text = await homePage.evaluate(() => document.body?.innerText || '');
-      
+
+      // Store website text for re-classification after crawl (Item 1)
+      this._lastWebsiteText = text.slice(0, 8000); // cap at 8KB to avoid memory bloat
+
       let isRejected = false;
       if (negWords && negWords.length > 0) {
           const lowerText = text.toLowerCase();
@@ -320,6 +172,7 @@ class WebsiteWorkerPool {
           }
       }
       if (isRejected) {
+          this._lastWebsiteText = '';
           return { primary: "", secondary: [], isRejected: true };
       }
       
@@ -348,15 +201,15 @@ class WebsiteWorkerPool {
       if (homePage) await homePage.close().catch(() => {});
     }
 
-    // Limit to top 4 pages total (home + about + contact + appointment)
-    pagesToVisit = [...new Set(pagesToVisit)].slice(0, 4);
+    // Limit to 3 pages total (home + contact + about). Fewer pages = faster per-lead.
+    pagesToVisit = [...new Set(pagesToVisit)].slice(0, 3);
     
     for (const url of pagesToVisit.slice(1)) {
         let p;
         try {
             p = await this.context.newPage();
             await blockRoute(p);
-            await p.goto(url, { timeout: 6000, waitUntil: "domcontentloaded" });
+            await p.goto(url, { timeout: 4000, waitUntil: "domcontentloaded" });
             const pText = await p.evaluate(() => document.body?.innerText || '');
             const pHtml = await p.content();
             const pEmails = [
@@ -374,8 +227,9 @@ class WebsiteWorkerPool {
     emails = [...new Set(emails)];
     const priority = ["contact@", "info@", "hello@", "support@"];
     let primary = emails.find(e => priority.some(p => e.startsWith(p))) || emails[0] || "";
-    
-    return { primary, secondary: emails.filter(e => e !== primary) };
+
+    // Collect website body text for re-classification (Item 1)
+    return { primary, secondary: emails.filter(e => e !== primary), websiteText: this._lastWebsiteText || '' };
   }
 }
 
@@ -391,33 +245,79 @@ async function checkPause(jobId) {
 // This is the cleanest filtering method — let Google's own search
 // engine return only matching businesses instead of keyword-scrubbing.
 // =========================
+// =============================================================================
+// SMART SEARCH EXPANSION ENGINE
+// Generates buyer-intent search queries from a broad niche string.
+// Each query is specifically crafted so Google Maps returns the RIGHT businesses,
+// reducing dependence on post-scrape filtering.
+// =============================================================================
 function expandNicheToQueries(niche) {
   const n = niche.toLowerCase().trim();
 
-  // RESTORATION — expand into specific damage/remediation types
-  if (n.includes('restoration') || n.includes('water damage') ||
-      n.includes('fire damage') || n.includes('mold') ||
-      n.includes('flood') || n.includes('remediation')) {
+  // ─── RESTORATION (Property Damage) ─────────────────────────────────────────
+  // Expands into 15 specific buyer-intent queries covering every restoration sub-type.
+  // This ensures we find EVERY real company while Google's algorithm pre-filters.
+  if (
+    n.includes('restoration') || n.includes('water damage') || n.includes('fire damage') ||
+    n.includes('mold') || n.includes('flood') || n.includes('remediation') ||
+    n.includes('mitigation') || n.includes('smoke damage') || n.includes('storm damage') ||
+    n.includes('disaster') || n.includes('sewage') || n.includes('property damage') ||
+    n.includes('water extraction') || n.includes('water removal')
+  ) {
     return [
+      // Water damage — core
       'water damage restoration',
+      'water damage company',
+      'water damage cleanup',
+      'emergency water removal',
+      'water extraction company',
+      // Flood
+      'flood cleanup company',
+      'flood damage repair',
+      // Fire & smoke
       'fire damage restoration',
-      'mold remediation',
-      'flood damage restoration',
-      'smoke damage restoration',
+      'smoke damage cleanup',
+      // Mold
+      'mold remediation company',
+      'mold removal service',
+      // Storm & disaster
+      'storm damage restoration',
+      'disaster restoration company',
+      // Sewage & general
+      'sewage cleanup company',
+      'property damage restoration',
+      // Item 5: Additional buyer-intent queries
+      'water mitigation company',
+      'emergency mitigation services',
+      'commercial restoration company',
+      'property mitigation company',
+      'fire and water restoration',
+      'disaster cleanup services',
+      'emergency cleanup company',
     ];
   }
 
-  // MED SPA — prevent returning massage spas
+  // ─── MED SPA ────────────────────────────────────────────────────────────────
   if (n.includes('med spa') || n.includes('medspa') || n.includes('medical spa')) {
-    return ['medical spa', 'aesthetic clinic', 'laser skin clinic', 'botox clinic', 'cosmetic clinic'];
+    return [
+      'medical spa',
+      'aesthetic clinic',
+      'laser skin clinic',
+      'botox clinic',
+      'cosmetic clinic',
+    ];
   }
 
-  // ROOFING — specific
+  // ─── ROOFING ────────────────────────────────────────────────────────────────
   if (n.includes('roofing') || n.includes('roofer')) {
-    return ['roofing contractor', 'roof repair company'];
+    return [
+      'roofing contractor',
+      'roof repair company',
+      'residential roofing company',
+    ];
   }
 
-  // Default: return the niche as-is (no expansion)
+  // ─── Default: use niche as-is ───────────────────────────────────────────────
   return [niche];
 }
 
@@ -500,7 +400,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
         if (await rejectBtn.count()) await rejectBtn.click();
       } catch {}
 
-      await page.waitForSelector('div[role="feed"]', { timeout: 5000 }).catch(() => {});
+      await page.waitForSelector('div[role="feed"]', { timeout: 8000 }).catch(() => {});
       
       let noNewCount = 0;
       let lastPaneTitle = "";
@@ -590,10 +490,15 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
           let paneFound = false;
-          for (let attempt = 0; attempt < 25; attempt++) {
-              if (attempt === 5 && !paneFound) {
-                  // Force a fast fallback click if Google Maps ignored it
+          // 20 attempts × 150ms = max 3s wait. Faster polling = fewer missed panes.
+          for (let attempt = 0; attempt < 20; attempt++) {
+              if (attempt === 4 && !paneFound) {
+                  // Force keyboard re-click if pane hasn't responded after 600ms
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
+              }
+              if (attempt === 10 && !paneFound) {
+                  // Second attempt: evaluate click directly in browser context
+                  try { await targetItem.evaluate(node => node.click()); } catch {}
               }
 
               // Broader selector set — Google Maps changes class names frequently
@@ -633,7 +538,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   break;
               }
               
-              await page.waitForTimeout(200);
+              await page.waitForTimeout(150);
           }
           if (!paneFound) {
               log(`⚠️ Timeout loading pane for ${name}, Skipping.`, jobId);
@@ -674,7 +579,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           let address = "";
           let detailsUpdated = false;
 
-          for (let attempt = 0; attempt < 8; attempt++) {
+          for (let attempt = 0; attempt < 5; attempt++) {
               phone = await sidePane.locator('button[data-item-id^="phone:tel:"]').first().textContent({ timeout: 500 }).catch(() => "");
               website = await sidePane.locator('a[data-item-id="authority"]').first().getAttribute("href", { timeout: 500 }).catch(() => "");
               address = await sidePane.locator('button[data-item-id="address"]').first().textContent({ timeout: 500 }).catch(() => "");
@@ -689,7 +594,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
 
               if (phoneStale && websiteStale) {
-                  await page.waitForTimeout(300);
+                  await page.waitForTimeout(400);
               } else {
                   detailsUpdated = true;
                   break;
@@ -700,10 +605,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           let reviews = '';
           let sidePaneText = '';
           let category = '';
+          let gbpServices = '';   // Item 2: GBP listed services
+          let gbpReviewsText = ''; // Item 3: sampled review text
 
           try {
             sidePaneText = await sidePane.textContent({ timeout: 500 }).catch(() => "");
-            
+
             // Extract category robustly
             category = await sidePane.locator('button[jsaction*="category"]').first().textContent({ timeout: 300 }).catch(() => "");
             if (!category) {
@@ -711,41 +618,56 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
             }
             if (!category) {
                 const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*·\s*([^·\n\r\t]+)/i);
-                if (match) {
-                    category = match[1].trim();
-                }
+                if (match) category = match[1].trim();
             }
 
+            // ── Item 2: GBP SERVICES EXTRACTION ─────────────────────────────
+            // Google Maps shows a services list inside the side pane.
+            // Multiple selector patterns tried for resilience against DOM changes.
+            try {
+              const serviceEls = await sidePane.locator('div[aria-label*="Services"] span, ul[aria-label*="Services"] li, div[jslog*="service"] span').allTextContents().catch(() => []);
+              if (serviceEls.length > 0) {
+                gbpServices = serviceEls.join(' ').toLowerCase();
+              } else {
+                // Fallback: regex the pane text for a services block
+                const svcMatch = sidePaneText.match(/services[:\s]+([\w\s,;&]+)/i);
+                if (svcMatch) gbpServices = svcMatch[1].toLowerCase().slice(0, 400);
+              }
+            } catch { /* services not critical */ }
+
+            // ── Item 3: GBP REVIEWS SAMPLING ────────────────────────────────
+            // Scrape first visible review snippets from the side pane.
+            // Limited to first 5 reviews to keep this fast.
+            try {
+              const reviewSnippets = await sidePane
+                .locator('span[data-expandable-section], div[data-review-id] span, div[jslog*="review"] span, div[class*="review"] span[jslog]')
+                .allTextContents()
+                .catch(() => []);
+              if (reviewSnippets.length > 0) {
+                gbpReviewsText = reviewSnippets.slice(0, 8).join(' ').toLowerCase().slice(0, 2000);
+              } else {
+                // Fallback: extract using sidebar aria text patterns
+                const revMatch = sidePaneText.match(/(?:reviews?)[^]*?(?=hours|address|website|phone|$)/i);
+                if (revMatch) gbpReviewsText = revMatch[0].toLowerCase().slice(0, 2000);
+              }
+            } catch { /* reviews not critical */ }
+
             const ratingData = await sidePane.evaluate((pane) => {
-              // Try common classes first
               const ratingEl = pane.querySelector('span.MW4etd, .ceaeq');
               const reviewEl = pane.querySelector('span.UY7F9, .dK32cf');
-              
               if (ratingEl && reviewEl) {
-                return { 
-                  r: ratingEl.innerText.trim(), 
-                  v: reviewEl.innerText.replace(/[^\d]/g, '') 
-                };
+                return { r: ratingEl.innerText.trim(), v: reviewEl.innerText.replace(/[^\d]/g, '') };
               }
-
-              // Fallback 1: aria-label on star button
               const starBtn = pane.querySelector('button[aria-label*="star"]');
               if (starBtn) {
                 const label = starBtn.getAttribute('aria-label');
                 const rMatch = label.match(/([\d.]+)\s*star/i);
                 const vMatch = label.match(/([\d,]+)\s*(?:rating|review)/i);
-                if (rMatch && vMatch) {
-                   return { r: rMatch[1], v: vMatch[1].replace(/,/g, '') };
-                }
+                if (rMatch && vMatch) return { r: rMatch[1], v: vMatch[1].replace(/,/g, '') };
               }
-
-              // Fallback 2: Regex on the main visible text
               const text = pane.innerText;
               const rMatch = text.match(/(?:^|\n)([\d.]+)\s*\n?\s*\(([\d,]+)\)/);
-              if (rMatch) {
-                 return { r: rMatch[1], v: rMatch[2].replace(/,/g, '') };
-              }
-
+              if (rMatch) return { r: rMatch[1], v: rMatch[2].replace(/,/g, '') };
               return { r: '', v: '' };
             }).catch(() => ({ r: '', v: '' }));
 
@@ -773,15 +695,26 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               log(`⏭️ Skipping ${name} (Duplicate phone: ${cleanPhoneNum})`, jobId);
               continue;
           }
-          if (websiteCleanKey && processedWebsites.has(websiteCleanKey) && !isSharedPlatform(websiteCleanKey)) {
+          // Item 6: Franchise brands (servpro.com/location, pauldavis.com/location) share a root domain
+          // but represent genuinely different physical locations — never dedup them by domain.
+          if (websiteCleanKey && processedWebsites.has(websiteCleanKey) && !isSharedPlatform(websiteCleanKey) && !isFranchiseDomain(websiteCleanKey)) {
               log(`⏭️ Skipping ${name} (Duplicate website: ${website})`, jobId);
               continue;
           }
 
-          // STRICT NICHE ALIGNMENT CHECK
-          if (!isNicheAligned(niche, name, category, sidePaneText)) {
-              log(`⏭️ Skipping ${name} (Not aligned with niche: "${niche}" | Category: "${category || 'Unknown'}")`, jobId);
+          // =============================================================================
+          // NICHE INTELLIGENCE ENGINE v2 — Entity Classification
+          // Services + reviews now included in classification corpus
+          // =============================================================================
+          const classification = classifyBusiness(niche, name, category, sidePaneText, gbpServices, gbpReviewsText, '');
+          if (classification.status === 'rejected') {
+              log(`⏭️ REJECTED ${name} [score:${classification.score}] [${classification.sms_ready_tier}] — ${classification.reason}`, jobId);
               continue;
+          }
+          if (classification.status === 'review') {
+              log(`⚠️ REVIEW ${name} [score:${classification.score}] [${classification.sms_ready_tier}]`, jobId);
+          } else {
+              log(`✅ ACCEPTED ${name} [score:${classification.score}] [${classification.sms_ready_tier}] — ${classification.reason.slice(0, 80)}`, jobId);
           }
 
           // Check Negative Keywords inside sidePaneText
@@ -819,7 +752,17 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
             city: subLoc,
             primary_email: "",
             intent: "LOW",
-            score: 0
+            score: 0,
+            // Niche Intelligence v2 fields
+            niche_match_score: classification.score,
+            classification_reason: classification.reason,
+            classification_status: classification.status,
+            sms_ready_tier: classification.sms_ready_tier,
+            // Cached for re-classification (not exported to CSV)
+            _category: category,
+            _sidePaneText: sidePaneText,
+            _services: gbpServices,
+            _reviews_text: gbpReviewsText,
           };
 
           const initialScore = scoreLead(lead);
@@ -829,21 +772,55 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           if (lead.website) {
             const workerTask = async (data) => {
               if (data.isRejected) {
-                 log(`🚫 Purging ${name} (Negative keyword found on their website!)`, jobId);
+                 log(`🚫 Purging ${name} (Negative keyword on website)`, jobId);
                  updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
                  return;
               }
 
+              // ── Item 1: RE-CLASSIFY WITH WEBSITE TEXT ─────────────────────
+              // Run classification again now that we have the full website body.
+              // This can upgrade 'review' → 'accepted' or purge wrong-industry leads.
+              if (data.websiteText && data.websiteText.length > 100) {
+                const reclass = reclassifyWithWebsite(niche, {
+                  business_name: lead.business_name,
+                  niche_match_score: lead.niche_match_score,
+                  classification_status: lead.classification_status,
+                  category: lead._category,
+                  sidePaneText: lead._sidePaneText,
+                  services: lead._services,
+                  reviews_text: lead._reviews_text,
+                }, data.websiteText);
+
+                if (reclass.purge) {
+                  log(`🚫 Web-reclassify PURGED ${name}: ${reclass.updated.classification_reason}`, jobId);
+                  updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
+                  return;
+                }
+                if (reclass.upgraded) {
+                  log(`⬆️ Web-reclassify UPGRADED ${name}: score ${lead.niche_match_score}→${reclass.updated.niche_match_score}`, jobId);
+                  // Merge upgraded classification fields back onto lead
+                  lead.niche_match_score      = reclass.updated.niche_match_score;
+                  lead.classification_status  = reclass.updated.classification_status;
+                  lead.classification_reason  = reclass.updated.classification_reason;
+                  lead.sms_ready_tier         = reclass.updated.sms_ready_tier;
+                } else if (reclass.downgraded) {
+                  log(`⬇️ Web-reclassify DOWNGRADED ${name}: score ${lead.niche_match_score}→${reclass.updated.niche_match_score}`, jobId);
+                  lead.niche_match_score      = reclass.updated.niche_match_score;
+                  lead.classification_status  = reclass.updated.classification_status;
+                  lead.classification_reason  = reclass.updated.classification_reason;
+                  lead.sms_ready_tier         = reclass.updated.sms_ready_tier;
+                }
+              }
+
+              // Update lead with email + re-scored intent
+              const enriched = { ...lead, primary_email: data.primary || '' };
               if (data.primary) {
-                // Store email immediately — no SMTP verification (blocks workers 5-10s, usually ISP-blocked)
-                const enriched = {
-                  ...lead,
-                  primary_email: data.primary,
-                };
                 const scoreResult = scoreLead(enriched);
                 enriched.intent = scoreResult.intent_tag;
                 enriched.score = scoreResult.score;
-                log(`📧 Found Email for ${name}: ${data.primary}`, jobId);
+                log(`📧 Email for ${name}: ${data.primary}`, jobId);
+              }
+              if (data.primary || lead.niche_match_score !== enriched.niche_match_score) {
                 updateJob(jobId, { enrichLead: enriched });
               }
             };
@@ -1141,16 +1118,22 @@ export async function filterCSVByGoogleCategory(leads, jobId, workerCount = 10, 
             }
           }
 
-          // Use the exact same ruleset as scraping to validate
-          const isAligned = isNicheAligned('restoration', lead.business_name, category, sidePaneText);
+          // Use the Niche Intelligence Engine for category-based CSV filtering
+          const csvClassification = classifyBusiness('restoration', lead.business_name, category, sidePaneText, '');
 
-          if (isAligned) {
-            log(`✅ KEPT: ${lead.business_name} (Category: "${category || 'Unknown'}")`, jobId);
-            const enriched = { ...lead, maps_url: finalMapsUrl };
+          if (csvClassification.status !== 'rejected') {
+            log(`✅ KEPT: ${lead.business_name} [score:${csvClassification.score}] (Category: "${category || 'Unknown'}")`, jobId);
+            const enriched = {
+              ...lead,
+              maps_url: finalMapsUrl,
+              niche_match_score: csvClassification.score,
+              classification_reason: csvClassification.reason,
+              classification_status: csvClassification.status,
+            };
             kept.push(enriched);
             updateJob(jobId, { leads: [enriched] });
           } else {
-            log(`❌ DROPPED: ${lead.business_name} (Category: "${category || 'Unknown'}")`, jobId);
+            log(`❌ DROPPED: ${lead.business_name} [score:${csvClassification.score}] — ${csvClassification.reason}`, jobId);
           }
         } catch (err) {
           log(`⚠️ Error on ${lead.business_name}: ${err.message?.slice(0, 60)}`, jobId);
