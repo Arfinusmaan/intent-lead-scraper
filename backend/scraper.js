@@ -142,8 +142,8 @@ class WebsiteWorkerPool {
     const blockRoute = async (page) => {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        // Block images, media AND fonts — fonts can add 1-2s to slow sites
-        if (['image', 'media', 'font'].includes(type)) return route.abort();
+        // Block images, media, fonts and stylesheets to maximize crawl speed and prevent visual tab clutter
+        if (['image', 'media', 'font', 'stylesheet'].includes(type)) return route.abort();
         return route.continue();
       });
     };
@@ -327,7 +327,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
 
   const browser = await chromium.launch({ headless: false, args: ['--window-size=1920,1080'] });
   const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
-  const workerPool = new WebsiteWorkerPool(context, parseInt(workerCount));
+  
+  // Launch a separate, headless browser for background website crawling to prevent tab clutter
+  // and reduce CPU/network resource contention, eliminating timeouts on the main Maps page.
+  const crawlBrowser = await chromium.launch({ headless: true });
+  const crawlContext = await crawlBrowser.newContext();
+  const workerPool = new WebsiteWorkerPool(crawlContext, parseInt(workerCount));
 
   // Expand the niche into specific targeted queries
   const nicheQueries = expandNicheToQueries(niche);
@@ -479,7 +484,8 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   } catch {}
                   
                   try {
-                     await targetItem.click({ timeout: 1500 });
+                      // Click top-left of the card to avoid clicking the Website / Directions buttons
+                      await targetItem.click({ position: { x: 12, y: 12 }, timeout: 1500 });
                   } catch {
                      try { 
                          // Robust fallback click using JS to bypass any visible overlay
@@ -910,6 +916,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
   log(`✅ Scan Finished. Total: ${allLeads.length}`, jobId);
   onProgress(100);
   await browser.close();
+  await crawlBrowser.close().catch(() => {});
   return allLeads;
 }
 
