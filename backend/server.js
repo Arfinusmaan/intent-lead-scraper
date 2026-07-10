@@ -78,14 +78,29 @@ app.post('/upload-csv', upload.single('file'), (req, res) => {
   const jobId = nanoid();
   const leads = [];
 
+  let buf = req.file.buffer;
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    buf = Buffer.from(buf.toString('utf16le'), 'utf8');
+  }
+
+  let fileContent = buf.toString('utf8');
+  let cleanLines = fileContent.split(/\r?\n/).filter(line => !line.trim().startsWith('---') && !line.trim().startsWith('"---') && line.trim().length > 0);
+  buf = Buffer.from(cleanLines.join('\n'), 'utf8');
+
   const bufferStream = new stream.PassThrough();
-  bufferStream.end(req.file.buffer);
+  bufferStream.end(buf);
+
+  const firstLine = cleanLines[0] || '';
+  let separator = ',';
+  if (firstLine.includes('\t')) separator = '\t';
+  else if (firstLine.includes(';') && !firstLine.includes(',')) separator = ';';
 
   bufferStream
-    .pipe(csvParser())
+    .pipe(csvParser({ separator }))
     .on('data', (data) => {
        const lead = parseLead(data);
-       if (lead.business_name) leads.push(lead);
+       const bName = lead.business_name ? lead.business_name.toLowerCase() : '';
+       if (bName && bName !== 'name' && bName !== 'business name' && bName !== 'company') leads.push(lead);
     })
     .on('end', () => {
        createJob(jobId, {
@@ -442,14 +457,29 @@ app.post('/filter-google', upload.single('file'), (req, res) => {
   const jobId = nanoid();
   const leads = [];
 
+  let buf = req.file.buffer;
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    buf = Buffer.from(buf.toString('utf16le'), 'utf8');
+  }
+
+  let fileContent = buf.toString('utf8');
+  let cleanLines = fileContent.split(/\r?\n/).filter(line => !line.trim().startsWith('---') && !line.trim().startsWith('"---') && line.trim().length > 0);
+  buf = Buffer.from(cleanLines.join('\n'), 'utf8');
+
   const bufferStream = new stream.PassThrough();
-  bufferStream.end(req.file.buffer);
+  bufferStream.end(buf);
+
+  const firstLine = cleanLines[0] || '';
+  let separator = ',';
+  if (firstLine.includes('\t')) separator = '\t';
+  else if (firstLine.includes(';') && !firstLine.includes(',')) separator = ';';
 
   bufferStream
-    .pipe(csvParser())
+    .pipe(csvParser({ separator }))
     .on('data', (data) => {
       const lead = parseLead(data);
-      if (lead.business_name) leads.push(lead);
+      const bName = lead.business_name ? lead.business_name.toLowerCase() : '';
+      if (bName && bName !== 'name' && bName !== 'business name' && bName !== 'company') leads.push(lead);
     })
     .on('end', () => {
       createJob(jobId, {
@@ -467,7 +497,7 @@ app.post('/filter-google', upload.single('file'), (req, res) => {
 
       log(`🔍 Started Google Category Filter for ${leads.length} leads`, jobId);
 
-      const workers = Math.max(12, parseInt(req.body.workers) || 12);
+      const workers = parseInt(req.body.workers) || 15;
       filterCSVByGoogleCategory(leads, jobId, workers, (progressData) => {
         const job = getJob(jobId);
         if (!job || job.stopFlag) return;

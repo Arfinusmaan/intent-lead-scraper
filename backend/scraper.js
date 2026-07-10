@@ -282,35 +282,17 @@ function expandNicheToQueries(niche) {
     n.includes('water extraction') || n.includes('water removal')
   ) {
     return [
-      // Water damage — core
+      // Core Water
       'water damage restoration',
-      'water damage company',
-      'water damage cleanup',
-      'emergency water removal',
-      'water extraction company',
-      // Flood
-      'flood cleanup company',
-      'flood damage repair',
-      // Fire & smoke
-      'fire damage restoration',
-      'smoke damage cleanup',
-      // Mold
-      'mold remediation company',
-      'mold removal service',
-      // Storm & disaster
-      'storm damage restoration',
-      'disaster restoration company',
-      // Sewage & general
-      'sewage cleanup company',
-      'property damage restoration',
-      // Item 5: Additional buyer-intent queries
       'water mitigation company',
-      'emergency mitigation services',
-      'commercial restoration company',
-      'property mitigation company',
-      'fire and water restoration',
-      'disaster cleanup services',
-      'emergency cleanup company',
+      // Fire & Smoke
+      'fire damage restoration',
+      // Mold
+      'mold remediation',
+      // Disaster & General
+      'disaster restoration company',
+      'property damage restoration',
+      'emergency mitigation services'
     ];
   }
 
