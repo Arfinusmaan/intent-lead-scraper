@@ -1,59 +1,97 @@
 {
-  "eON0MoyZ-df2whUFnQ8GE": {
-    "id": "eON0MoyZ-df2whUFnQ8GE",
-    "niche": "Restoration company",
-    "location": "CSV Filter",
+  "BE5E0S1tXkdAWyctaFAOL": {
+    "id": "BE5E0S1tXkdAWyctaFAOL",
+    "niche": "Google Filter",
+    "location": "From CSV",
     "filterType": "all",
-    "status": "stopped",
+    "status": "completed",
     "progress": 100,
-    "currentCity": "Starting filter...",
-    "stats": {},
+    "currentCity": "Starting...",
+    "stats": {
+      "total": 0,
+      "highIntent": 0
+    },
     "stopFlag": false,
     "pauseFlag": false,
     "cancelled": false,
-    "createdAt": "2026-07-03T11:17:55.827Z",
-    "filterMode": true,
-    "totalInput": 0,
-    "workerRunning": false,
+    "createdAt": "2026-07-10T20:53:36.327Z",
     "leadCount": 0,
     "leads": []
   },
-  "sRUao6bGS0o1GmxRpCdVE": {
-    "id": "sRUao6bGS0o1GmxRpCdVE",
-    "niche": "Restoration company",
-    "location": "CSV Filter",
+  "xnaOIc9M8hkB_l0MXaYQf": {
+    "id": "xnaOIc9M8hkB_l0MXaYQf",
+    "niche": "Google Filter",
+    "location": "From CSV",
     "filterType": "all",
-    "status": "stopped",
-    "progress": 0,
-    "currentCity": "Starting filter...",
-    "stats": {},
+    "status": "completed",
+    "progress": 100,
+    "currentCity": "Starting...",
+    "stats": {
+      "total": 0,
+      "highIntent": 0
+    },
     "stopFlag": false,
     "pauseFlag": false,
     "cancelled": false,
-    "createdAt": "2026-07-03T11:27:32.751Z",
-    "filterMode": true,
-    "totalInput": 4656,
-    "workerRunning": false,
+    "createdAt": "2026-07-10T20:59:29.891Z",
     "leadCount": 0,
     "leads": []
   },
-  "k1JlHzp_h1CqbLNT_PkK6": {
-    "id": "k1JlHzp_h1CqbLNT_PkK6",
-    "niche": "Restoration Company",
-    "location": "CSV Filter",
+  "B1lhUfGCW66X5pTBoIZN0": {
+    "id": "B1lhUfGCW66X5pTBoIZN0",
+    "niche": "Google Filter",
+    "location": "From CSV",
     "filterType": "all",
-    "status": "stopped",
-    "progress": 2,
-    "currentCity": "Filtered: 99/4656",
-    "stats": {},
+    "status": "completed",
+    "progress": 100,
+    "currentCity": "Starting...",
+    "stats": {
+      "total": 0,
+      "highIntent": 0
+    },
     "stopFlag": false,
     "pauseFlag": false,
     "cancelled": false,
-    "createdAt": "2026-07-03T11:31:37.447Z",
-    "filterMode": true,
-    "totalInput": 4656,
-    "workerRunning": false,
+    "createdAt": "2026-07-10T21:00:05.524Z",
     "leadCount": 0,
+    "leads": []
+  },
+  "rn9GVrxhXMz1AfysEMT1b": {
+    "id": "rn9GVrxhXMz1AfysEMT1b",
+    "niche": "Google Filter",
+    "location": "From CSV",
+    "filterType": "all",
+    "status": "completed",
+    "progress": 100,
+    "currentCity": "Starting...",
+    "stats": {
+      "total": 0,
+      "highIntent": 0
+    },
+    "stopFlag": false,
+    "pauseFlag": false,
+    "cancelled": false,
+    "createdAt": "2026-07-10T21:02:00.533Z",
+    "leadCount": 0,
+    "leads": []
+  },
+  "qSe1r2aqYP4SkIa6dMj9H": {
+    "id": "qSe1r2aqYP4SkIa6dMj9H",
+    "niche": "Google Filter",
+    "location": "From CSV",
+    "filterType": "all",
+    "status": "cancelled",
+    "progress": 100,
+    "currentCity": "403/745 checked — 281 restoration",
+    "stats": {
+      "total": 281,
+      "highIntent": 80
+    },
+    "stopFlag": true,
+    "pauseFlag": true,
+    "cancelled": true,
+    "createdAt": "2026-07-10T21:09:27.410Z",
+    "leadCount": 281,
     "leads": []
   }
 }
