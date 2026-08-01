@@ -4,4 +4,5 @@ dist/
 build/
 *.log
 backend/exports/
-*.csv
+backend/jobs_db.json
+scratch/

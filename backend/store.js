@@ -3,6 +3,16 @@ import path from 'path';
 
 const jobs = new Map();
 
+// =========================
+// GLOBAL LIFETIME DEDUPLICATION
+// Ensures no phone or website is ever scraped twice across different jobs/states
+// =========================
+const GLOBAL_DEDUP_FILE = path.join(process.cwd(), 'exports', 'global_dedup.json');
+const globalDedup = {
+  phones: new Set(),
+  websites: new Set()
+};
+
 // Debounce timers for CSV rewrites — prevents disk hammering when many
 // enrichments fire back-to-back (one rewrite after 500ms idle)
 const csvDebounceTimers = new Map();
@@ -230,7 +240,7 @@ export function updateJob(id, updates = {}) {
       if (existingNames.has(nameKey)) return false;
 
       const phoneClean = l.phone ? l.phone.replace(/[^\d]/g, '') : '';
-      if (phoneClean && existingPhones.has(phoneClean)) return false;
+      if (phoneClean && (existingPhones.has(phoneClean) || globalDedup.phones.has(phoneClean))) return false;
 
       let websiteClean = '';
       if (l.website) {
@@ -240,11 +250,22 @@ export function updateJob(id, updates = {}) {
           websiteClean = l.website.trim().toLowerCase().replace('www.', '');
         }
       }
-      if (websiteClean && existingWebsites.has(websiteClean) && !isSharedPlatform(websiteClean)) return false;
+      if (websiteClean && !isSharedPlatform(websiteClean)) {
+         if (existingWebsites.has(websiteClean) || globalDedup.websites.has(websiteClean)) return false;
+      }
 
       existingNames.add(nameKey);
-      if (phoneClean) existingPhones.add(phoneClean);
-      if (websiteClean) websiteClean && existingWebsites.add(websiteClean);
+      
+      if (phoneClean) {
+         existingPhones.add(phoneClean);
+         globalDedup.phones.add(phoneClean);
+      }
+      
+      if (websiteClean && !isSharedPlatform(websiteClean)) {
+         existingWebsites.add(websiteClean);
+         globalDedup.websites.add(websiteClean);
+      }
+      
       return true;
     });
 
@@ -314,6 +335,18 @@ export function loadJobsFromDisk() {
       console.error(`⚠️ Failed to load jobs DB:`, err.message);
     }
   }
+
+  // Load Global Dedup Shield
+  if (fs.existsSync(GLOBAL_DEDUP_FILE)) {
+    try {
+      const dedupData = JSON.parse(fs.readFileSync(GLOBAL_DEDUP_FILE, 'utf-8'));
+      if (dedupData.phones) dedupData.phones.forEach(p => globalDedup.phones.add(p));
+      if (dedupData.websites) dedupData.websites.forEach(w => globalDedup.websites.add(w));
+      console.log(`🛡️ Global Dedup Shield Active: ${globalDedup.phones.size} Phones, ${globalDedup.websites.size} Websites protected.`);
+    } catch (err) {
+      console.error(`⚠️ Failed to load Global Dedup Shield:`, err.message);
+    }
+  }
 }
 
 export function saveJobsToDisk() {
@@ -338,6 +371,14 @@ export function saveJobsToDisk() {
   } catch (err) {
     // silently fail to not spam logs
   }
+
+  // Save Global Dedup Shield
+  try {
+    fs.writeFileSync(GLOBAL_DEDUP_FILE, JSON.stringify({
+      phones: Array.from(globalDedup.phones),
+      websites: Array.from(globalDedup.websites)
+    }));
+  } catch (err) {}
 }
 
 // Helper: get the path to the CSV file for a given job ID

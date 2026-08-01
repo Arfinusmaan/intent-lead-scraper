@@ -6,7 +6,7 @@ import { log, processInBatches } from "./utils.js";
 import { getSubLocations } from "./cityService.js";
 import { getJob, updateJob, setPauseFlag } from "./store.js";
 import { scoreLead } from "./intentScorer.js";
-import { classifyBusiness, reclassifyWithWebsite, getSmsReadyTier } from "./nicheClassifier.js";
+import { classifyLead } from "./filter.js";
 
 function isSharedPlatform(domain) {
   if (!domain) return false;
@@ -33,12 +33,10 @@ function isFranchiseDomain(domain) {
   return FRANCHISE_DOMAIN_ROOTS.some(fr => d.includes(fr));
 }
 
-// isNicheAligned is replaced by classifyBusiness from nicheClassifier.js
-// The new classifier returns { score, reason, status } instead of a boolean.
-// Kept as a thin compatibility shim used in filterCSVByGoogleCategory for now.
+// Thin compatibility shim — used by filterCSVByGoogleCategory.
 export function isNicheAligned(niche, businessName, category, sidePaneText) {
-  const result = classifyBusiness(niche, businessName, category, sidePaneText, '');
-  return result.status === 'accepted';
+  const classification = classifyLead({ name: businessName, categories: [category, sidePaneText].filter(Boolean) }, niche, false);
+  return classification.status === 'KEEP';
 }
 
 // Normalize phone numbers — strip everything except digits and leading +
@@ -159,8 +157,9 @@ class WebsiteWorkerPool {
     const blockRoute = async (page) => {
       await page.route('**/*', (route) => {
         const type = route.request().resourceType();
-        // Block images, media, fonts and stylesheets to maximize crawl speed and prevent visual tab clutter
-        if (['image', 'media', 'font', 'stylesheet'].includes(type)) return route.abort();
+        // Block images and media to maximize crawl speed.
+        // We allow stylesheets/fonts to prevent breaking some React/Angular apps.
+        if (['image', 'media'].includes(type)) return route.abort();
         return route.continue();
       });
     };
@@ -269,69 +268,48 @@ async function checkPause(jobId) {
 // reducing dependence on post-scrape filtering.
 // =============================================================================
 function expandNicheToQueries(niche) {
-  const n = niche.toLowerCase().trim();
-
-  // ─── RESTORATION (Property Damage) ─────────────────────────────────────────
-  // Expands into 15 specific buyer-intent queries covering every restoration sub-type.
-  // This ensures we find EVERY real company while Google's algorithm pre-filters.
-  if (
-    n.includes('restoration') || n.includes('water damage') || n.includes('fire damage') ||
-    n.includes('mold') || n.includes('flood') || n.includes('remediation') ||
-    n.includes('mitigation') || n.includes('smoke damage') || n.includes('storm damage') ||
-    n.includes('disaster') || n.includes('sewage') || n.includes('property damage') ||
-    n.includes('water extraction') || n.includes('water removal')
-  ) {
-    return [
-      // Core Water
-      'water damage restoration',
-      'water mitigation company',
-      // Fire & Smoke
-      'fire damage restoration',
-      // Mold
-      'mold remediation',
-      // Disaster & General
-      'disaster restoration company',
-      'property damage restoration',
-      'emergency mitigation services'
-    ];
+  if (niche.includes(',')) {
+    return niche.split(',').map(n => n.trim()).filter(Boolean);
   }
-
-  // ─── MED SPA ────────────────────────────────────────────────────────────────
-  if (n.includes('med spa') || n.includes('medspa') || n.includes('medical spa')) {
-    return [
-      'medical spa',
-      'aesthetic clinic',
-      'laser skin clinic',
-      'botox clinic',
-      'cosmetic clinic',
-    ];
-  }
-
-  // ─── ROOFING ────────────────────────────────────────────────────────────────
-  if (n.includes('roofing') || n.includes('roofer')) {
-    return [
-      'roofing contractor',
-      'roof repair company',
-      'residential roofing company',
-    ];
-  }
-
-  // ─── Default: use niche as-is ───────────────────────────────────────────────
-  return [niche];
+  return [niche.trim()];
 }
 
 export async function scrapeGoogleMaps(niche, location, filterType, negativeKeywords, jobId, mode = 'hybrid', workerCount = 3, onProgress = () => {}) {
   const job = getJob(jobId);
   if (!job) return [];
 
-  const browser = await chromium.launch({ headless: false, args: ['--window-size=1920,1080'] });
-  const context = await browser.newContext({ viewport: { width: 1920, height: 1080 } });
-  
-  // Launch a separate, headless browser for background website crawling to prevent tab clutter
-  // and reduce CPU/network resource contention, eliminating timeouts on the main Maps page.
-  const crawlBrowser = await chromium.launch({ headless: true });
-  const crawlContext = await crawlBrowser.newContext();
-  const workerPool = new WebsiteWorkerPool(crawlContext, parseInt(workerCount));
+  const isBackground = mode === 'normal';
+  const browser = await chromium.launch({
+    headless: isBackground,
+    args: [
+      '--window-size=1920,1080',
+      '--disable-gpu',            // saves VRAM
+      '--no-sandbox',
+      '--disable-dev-shm-usage',  // prevents /dev/shm OOM crashes
+      '--js-flags=--max-old-space-size=256' // cap V8 heap per tab
+    ]
+  });
+
+  // Single shared context — all ZIP tabs live inside ONE browser window
+  const globalContext = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+
+  // Block images, media, fonts, and tracking pixels at the CONTEXT level.
+  // This applies to every tab automatically — no per-tab routing needed.
+  await globalContext.route('**/*', (route) => {
+    const type = route.request().resourceType();
+    const url  = route.request().url();
+    // Block: images, video, audio, fonts, tracking pixels
+    if (['image', 'media', 'font'].includes(type)) return route.abort();
+    // Block known analytics/tracking domains that waste bandwidth
+    if (url.includes('google-analytics') || url.includes('doubleclick') || url.includes('adservice')) return route.abort();
+    return route.continue();
+  });
+
+  // Crawl browser: headless, capped at 2 workers max to prevent RAM spikes
+  const crawlBrowser = await chromium.launch({ headless: true, args: ['--disable-gpu', '--no-sandbox', '--disable-dev-shm-usage'] });
+  const crawlContext = await crawlBrowser.newContext({ viewport: { width: 1280, height: 720 } });
+  const crawlWorkerCap = Math.min(parseInt(workerCount), 2); // max 2 crawl tabs regardless of UI setting
+  const workerPool = new WebsiteWorkerPool(crawlContext, crawlWorkerCap);
 
   // Expand the niche into specific targeted queries
   const nicheQueries = expandNicheToQueries(niche);
@@ -360,16 +338,21 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     updateJob(jobId, { lastProcessedIndex: sIdx });
     await checkPause(jobId);
     if (getJob(jobId)?.stopFlag) return;
-    const page = await context.newPage();
     
-    // =========================
-    // SPEED: Block only images and media to make Google Maps fast without breaking it
-    // =========================
-    await page.route('**/*', (route) => {
-        const type = route.request().resourceType();
-        if (['image', 'media'].includes(type)) return route.abort();
-        return route.continue();
-    });
+    // SPINTAX: Randomize User Agents to simulate different devices
+    const userAgents = [
+       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+       "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0",
+       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/120.0",
+       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0 Safari/537.36"
+    ];
+    const randomUA = userAgents[Math.floor(Math.random() * userAgents.length)];
+
+    // Open a new tab within the single browser window
+    const page = await globalContext.newPage();
+    
+    // Resource blocking is handled at the context level above — no per-page routing needed.
     
     try {
       // Run each targeted sub-query for this location
@@ -387,16 +370,17 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       // =========================
       const pageText = await page.content();
       if (pageText.includes('action="CaptchaRedirect"') || pageText.includes('Our systems have detected unusual traffic')) {
-          log(`🛑 CAPTCHA DETECTED! Pausing Engine automatically...`, jobId);
-          setPauseFlag(jobId, true);
-          updateJob(jobId, { currentCity: "PAUSED: Captcha Action Required" });
-          // Wait safely until the user manually hits 'Resume'
-          while (getJob(jobId)?.pauseFlag) {
-             await new Promise(r => setTimeout(r, 2000));
-          }
-          log(`▶️ Engine Resumed after Captcha!`, jobId);
-          // Refresh the page now that it's solved
-          await page.reload({ waitUntil: 'domcontentloaded' });
+          const cooldownMinutes = Math.floor(Math.random() * 5) + 3; // Random 3 to 7 minutes
+          log(`🛑 CAPTCHA DETECTED! Initiating Autonomous Cool-Down (${cooldownMinutes} minutes)...`, jobId);
+          updateJob(jobId, { currentCity: `IP COOL-DOWN: ${cooldownMinutes} Minutes` });
+          
+          // Sleep to let the Google IP flag naturally expire
+          await new Promise(r => setTimeout(r, cooldownMinutes * 60000));
+          
+          log(`▶️ Cool-Down Complete. Skipping to next ZIP with fresh fingerprint...`, jobId);
+          // Break the niche loop: This forces the engine into the 'finally' block to DESTROY 
+          // the poisoned browser context and generate a completely new Incognito instance.
+          break;
       }
 
       try {
@@ -415,7 +399,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           if (await feedLocator.count() === 0) break; // Check if the feed exists before scrolling
           
           const listings = feedLocator.locator('a[href*="/place"]');
-          const batchCount = await listings.count();
+          const batchCount = Math.min(await listings.count(), 150);
           let foundNewInBatch = false;
 
           // negWords already parsed once at the top of scrapeGoogleMaps
@@ -426,9 +410,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               
               let name = "";
               let item;
+              let itemText = "";
               try {
                  item = listings.nth(i);
                  name = await item.getAttribute("aria-label");
+                 const parent = item.locator('xpath=..');
+                 itemText = await parent.textContent({ timeout: 500 }).catch(() => "");
               } catch { continue; }
               
               if (!name) continue;
@@ -478,8 +465,8 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
                   try {
-                      // Click top-left of the card with force:true to bypass stability delays
-                      await targetItem.click({ position: { x: 12, y: 12 }, force: true, timeout: 1500 });
+                      // Standard click to center of element
+                      await targetItem.click({ force: true, timeout: 2000 });
                   } catch {
                      try { 
                          // Robust fallback click using JS to bypass any visible overlay
@@ -490,10 +477,10 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                   }
 
           let paneFound = false;
-          // Increased to 30 attempts × 200ms = max 6s wait. Prevents desync under parallel CPU load.
-          for (let attempt = 0; attempt < 30; attempt++) {
-              if (attempt === 4 && !paneFound) {
-                  // Force keyboard re-click if pane hasn't responded after 800ms
+          // Increased to 45 attempts × 200ms = max 9s wait. Prevents desync under parallel CPU load.
+          for (let attempt = 0; attempt < 45; attempt++) {
+              if (attempt === 6 && !paneFound) {
+                  // Force keyboard re-click if pane hasn't responded after 1200ms
                   try { await targetItem.focus(); await page.keyboard.press('Enter'); } catch {}
               }
               if (attempt === 12 && !paneFound) {
@@ -502,8 +489,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               }
 
               // Broader selector set — Google Maps changes class names frequently
-              const paneTitle = await page.evaluate(() => {
-                  // Try known class names first, then fall back to any visible h1 inside the detail pane
+              const paneTitle = await page.evaluate((expectedName) => {
                   const selectors = [
                     'h1.DUwDvf',
                     'h1.fontHeadlineLarge', 
@@ -511,13 +497,29 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                     'div[aria-label] h1',
                     'h1'
                   ];
+                  
+                  const cleanExpected = expectedName.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+                  const expectedWords = cleanExpected.split(' ').filter(w => w.length > 2);
+
+                  let bestMatch = '';
+                  
                   for (const sel of selectors) {
                     const els = Array.from(document.querySelectorAll(sel));
-                    const visible = els.find(el => el.offsetParent !== null && el.innerText.trim().length > 1);
-                    if (visible) return visible.innerText.trim();
+                    for (const el of els) {
+                        const text = el.textContent ? el.textContent.trim() : '';
+                        if (text.length > 1 && text !== "Results") {
+                            const cleanText = text.toLowerCase();
+                            // If it's an exact match or contains at least one meaningful word from the name, prioritize it
+                            if (cleanText.includes(cleanExpected) || (expectedWords.length > 0 && expectedWords.some(w => cleanText.includes(w)))) {
+                                return text;
+                            }
+                            // Otherwise save it as a fallback in case the expected name is completely mismatched
+                            if (!bestMatch) bestMatch = text;
+                        }
+                    }
                   }
-                  return '';
-              }).catch(() => '');
+                  return bestMatch;
+              }, name).catch(() => '');
 
               const isDifferent = paneTitle && paneTitle !== lastPaneTitle;
               const matchesName = matchesClickedName(paneTitle, name);
@@ -543,6 +545,9 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               continue;
           }
 
+          // Allow React to fully hydrate the DOM so category and phone aren't empty
+          await page.waitForTimeout(800);
+
           // Capture Google Maps URL now that the place pane is open
           const mapsUrl = page.url();
           
@@ -551,14 +556,15 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           try {
               const escapedName = name.replace(/"/g, '\\"');
               const exactPane = page.locator(`div[role="main"][aria-label="${escapedName}"]`).first();
-              if (await exactPane.count() > 0 && await exactPane.isVisible()) {
+              if (await exactPane.count() > 0) {
                   sidePane = exactPane;
               } else {
                   const panes = page.locator('div[role="main"]');
                   const count = await panes.count();
                   for (let k = 0; k < count; k++) {
                       const p = panes.nth(k);
-                      if (await p.isVisible()) {
+                      const pText = await p.textContent().catch(() => "");
+                      if (pText && pText.includes(name)) {
                           sidePane = p;
                           break;
                       }
@@ -617,13 +623,22 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
             sidePaneText = await sidePane.textContent({ timeout: 500 }).catch(() => "");
 
             // Extract category robustly
-            category = await sidePane.locator('button[jsaction*="category"]').first().textContent({ timeout: 300 }).catch(() => "");
-            if (!category) {
-                category = await sidePane.locator('button.D75GSc').first().textContent({ timeout: 300 }).catch(() => "");
-            }
+            category = await sidePane.locator('button[jsaction*="category"], button.D75GSc').first().textContent({ timeout: 1500 }).catch(() => "");
             if (!category) {
                 const match = sidePaneText.match(/(?:stars|\d\.\d)\s*(?:\([\d,]+\))?\s*·\s*([^·\n\r\t]+)/i);
-                if (match) category = match[1].trim();
+                if (match) {
+                    category = match[1].trim();
+                } else {
+                    // FOOLPROOF FALLBACK: Google Maps often drops the button and the middle dot if CSS is broken.
+                    // But the category text is ALWAYS injected into the side pane somewhere.
+                    const lowerText = sidePaneText.toLowerCase();
+                    const lowerNiche = niche.toLowerCase();
+                    if (lowerText.includes(lowerNiche)) {
+                        category = niche;
+                    } else if (lowerText.includes('water damage restoration service')) {
+                        category = 'Water damage restoration service';
+                    }
+                }
             }
 
             // ── Item 2: GBP SERVICES EXTRACTION ─────────────────────────────
@@ -708,19 +723,21 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           }
 
           // =============================================================================
-          // NICHE INTELLIGENCE ENGINE v2 — Entity Classification
-          // Services + reviews now included in classification corpus
+          // NEW HYBRID FILTERING ENGINE (BRAIN TRANSPLANT)
           // =============================================================================
-          const classification = classifyBusiness(niche, name, category, sidePaneText, gbpServices, gbpReviewsText, '');
-          if (classification.status === 'rejected') {
-              log(`⏭️ REJECTED ${name} [score:${classification.score}] [${classification.sms_ready_tier}] — ${classification.reason}`, jobId);
+          // CRITICAL FIX: Pass categories array, not types. Also include itemText as a fallback.
+          const dummyLead = { 
+              name: name.trim(), 
+              categories: [category, sidePaneText, itemText].filter(Boolean) 
+          };
+          const isExact = (mode === 'exact');
+          const classification = classifyLead(dummyLead, niche, isExact);
+
+          if (classification.status === 'TRASH') {
+              log(`⏭️ REJECTED ${name} — ${classification.reason}`, jobId);
               continue;
           }
-          if (classification.status === 'review') {
-              log(`⚠️ REVIEW ${name} [score:${classification.score}] [${classification.sms_ready_tier}]`, jobId);
-          } else {
-              log(`✅ ACCEPTED ${name} [score:${classification.score}] [${classification.sms_ready_tier}] — ${classification.reason.slice(0, 80)}`, jobId);
-          }
+          log(`✅ ACCEPTED ${name} — ${classification.reason.slice(0, 80)}`, jobId);
 
           // Check Negative Keywords inside sidePaneText
           if (sidePaneText) {
@@ -758,12 +775,10 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
             primary_email: "",
             intent: "LOW",
             score: 0,
-            // Niche Intelligence v2 fields
-            niche_match_score: classification.score,
+            niche_match_score: 100, // Legacy support
             classification_reason: classification.reason,
-            classification_status: classification.status,
-            sms_ready_tier: classification.sms_ready_tier,
-            // Cached for re-classification (not exported to CSV)
+            classification_status: 'accepted',
+            sms_ready_tier: 'Tier 1',
             _category: category,
             _sidePaneText: sidePaneText,
             _services: gbpServices,
@@ -782,40 +797,6 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                  return;
               }
 
-              // ── Item 1: RE-CLASSIFY WITH WEBSITE TEXT ─────────────────────
-              // Run classification again now that we have the full website body.
-              // This can upgrade 'review' → 'accepted' or purge wrong-industry leads.
-              if (data.websiteText && data.websiteText.length > 100) {
-                const reclass = reclassifyWithWebsite(niche, {
-                  business_name: lead.business_name,
-                  niche_match_score: lead.niche_match_score,
-                  classification_status: lead.classification_status,
-                  category: lead._category,
-                  sidePaneText: lead._sidePaneText,
-                  services: lead._services,
-                  reviews_text: lead._reviews_text,
-                }, data.websiteText);
-
-                if (reclass.purge) {
-                  log(`🚫 Web-reclassify PURGED ${name}: ${reclass.updated.classification_reason}`, jobId);
-                  updateJob(jobId, { enrichLead: { business_name: lead.business_name, isRejected: true } });
-                  return;
-                }
-                if (reclass.upgraded) {
-                  log(`⬆️ Web-reclassify UPGRADED ${name}: score ${lead.niche_match_score}→${reclass.updated.niche_match_score}`, jobId);
-                  // Merge upgraded classification fields back onto lead
-                  lead.niche_match_score      = reclass.updated.niche_match_score;
-                  lead.classification_status  = reclass.updated.classification_status;
-                  lead.classification_reason  = reclass.updated.classification_reason;
-                  lead.sms_ready_tier         = reclass.updated.sms_ready_tier;
-                } else if (reclass.downgraded) {
-                  log(`⬇️ Web-reclassify DOWNGRADED ${name}: score ${lead.niche_match_score}→${reclass.updated.niche_match_score}`, jobId);
-                  lead.niche_match_score      = reclass.updated.niche_match_score;
-                  lead.classification_status  = reclass.updated.classification_status;
-                  lead.classification_reason  = reclass.updated.classification_reason;
-                  lead.sms_ready_tier         = reclass.updated.sms_ready_tier;
-                }
-              }
 
               // Update lead with email + re-scored intent
               const enriched = { ...lead, primary_email: data.primary || '' };
@@ -860,12 +841,19 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           await feedLocatorNode.evaluate(el => el.scrollTop = el.scrollHeight).catch(() => {});
           
           // Flash Fast Dynamic Wait instead of rigid 2000ms
+          // INCREASED TO 10000ms (10 seconds) to ensure heavy parallel CPU/network lag never skips leads
           let waited = 0;
-          while (waited < 4000) { // Max 4s wait for slow connections
-             await page.waitForTimeout(300);
-             waited += 300;
+          while (waited < 10000) { 
+             await page.waitForTimeout(500);
+             waited += 500;
              const afterCount = await listings.count();
              if (afterCount > beforeScrollCount) break; // Found new items quickly!
+          }
+          // KILL-SWITCH
+          const afterCountFinal = await listings.count();
+          if (afterCountFinal === beforeScrollCount) {
+              log(`🛑 No new elements loaded after 10s. Force breaking scroll loop to prevent hanging...`, jobId);
+              break;
           }
       } else {
           await page.waitForTimeout(1000);
@@ -875,7 +863,7 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
     } catch(err) {
       log(`❌ Sub-location ${subLoc} error: ${err.message}`, jobId);
     } finally {
-      await page.close();
+      await page.close().catch(() => {});
     }
   };
 
@@ -895,6 +883,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
               const idx = getNextIdx();
               if (idx >= subLocations.length) break;
               await processSubLocation(subLocations[idx], idx);
+              
+              if (idx < subLocations.length - 1 && !getJob(jobId)?.stopFlag) {
+                  const delay = Math.floor(Math.random() * (15000 - 5000 + 1)) + 5000;
+                  log(`⏱️ Human-like break: Pausing for ${Math.round(delay/1000)}s to prevent Google bot-detection...`, jobId);
+                  await new Promise(r => setTimeout(r, delay));
+              }
           }
       });
       await Promise.all(tasks);
@@ -903,6 +897,12 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
       for (let sIdx = startIdx; sIdx < subLocations.length; sIdx++) {
          if (getJob(jobId)?.stopFlag) break;
          await processSubLocation(subLocations[sIdx], sIdx);
+         
+         if (sIdx < subLocations.length - 1 && !getJob(jobId)?.stopFlag) {
+             const delay = Math.floor(Math.random() * (15000 - 5000 + 1)) + 5000;
+             log(`⏱️ Human-like break: Pausing for ${Math.round(delay/1000)}s to prevent Google bot-detection...`, jobId);
+             await new Promise(r => setTimeout(r, delay));
+         }
       }
   }
 

@@ -3,6 +3,153 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Search, MapPin, Filter, Play, Download, Square, CheckCircle, XCircle, Loader2, Link as LinkIcon, Mail, User, Star, Map, History, Clock, Trash2, Bookmark, Upload } from "lucide-react";
 import "./index.css";
 
+const TagInput = ({ value, onChange, disabled, placeholder }) => {
+  const [input, setInput] = useState("");
+  const tags = value ? value.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      if (input.trim()) {
+        const newTags = [...tags, input.trim()];
+        onChange(newTags.join(', '));
+        setInput("");
+      }
+    }
+  };
+
+  const removeTag = (idxToRemove) => {
+    const newTags = tags.filter((_, idx) => idx !== idxToRemove);
+    onChange(newTags.join(', '));
+  };
+
+  return (
+    <div className={`w-full min-h-14 bg-white/5 border border-white/10 rounded-xl pl-10 pr-3 py-2 flex flex-wrap gap-2 items-center transition-all ${disabled ? 'opacity-50 pointer-events-none' : 'focus-within:bg-white/10 focus-within:border-rose-500/50'}`}>
+      {tags.map((tag, idx) => (
+        <span key={idx} className="bg-rose-500/20 text-rose-400 text-[11px] px-2 py-1 rounded-md flex items-center gap-1 font-bold uppercase tracking-wider">
+          {tag}
+          <button onClick={() => removeTag(idx)} disabled={disabled} className="hover:text-rose-300 ml-1">×</button>
+        </span>
+      ))}
+      <input
+        type="text"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={handleKeyDown}
+        disabled={disabled}
+        placeholder={tags.length === 0 ? placeholder : "Type and press Enter..."}
+        className="flex-1 min-w-[140px] bg-transparent text-white text-sm outline-none placeholder:text-slate-500"
+      />
+    </div>
+  );
+};
+
+const PREDEFINED_NICHES = [
+  "Water Damage Restoration",
+  "Fire Damage Restoration",
+  "Storm Damage Restoration",
+  "Mold Remediation",
+  "Plumbing",
+  "Roofing",
+  "HVAC",
+  "Electrician",
+  "Med Spa",
+  "Chiropractor",
+  "Dentist"
+];
+
+const AutocompleteTagInput = ({ value, onChange, disabled, placeholder }) => {
+  const [input, setInput] = useState("");
+  const [isOpen, setIsOpen] = useState(false);
+  const tags = value ? value.split(',').map(t => t.trim()).filter(Boolean) : [];
+
+  const filtered = input 
+    ? PREDEFINED_NICHES.filter(s => s.toLowerCase().includes(input.toLowerCase()) && !tags.includes(s))
+    : PREDEFINED_NICHES.filter(s => !tags.includes(s));
+
+  const addTag = (tag) => {
+    if (!tag.trim()) return;
+    if (!tags.includes(tag.trim())) {
+      const newTags = [...tags, tag.trim()];
+      onChange(newTags.join(', '));
+    }
+    setInput("");
+    setIsOpen(false);
+  };
+
+  const removeTag = (idxToRemove) => {
+    const newTags = tags.filter((_, idx) => idx !== idxToRemove);
+    onChange(newTags.join(', '));
+  };
+
+  return (
+    <div className="relative w-full flex-1">
+      <div 
+        className={`w-full h-full min-h-16 bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 py-2 flex flex-wrap gap-2 items-center transition-all cursor-text ${disabled ? 'opacity-50 pointer-events-none' : 'focus-within:bg-white/10 focus-within:border-purple-500/50'}`}
+        onClick={() => !disabled && setIsOpen(true)}
+      >
+        <Search className="absolute left-4 top-[22px] text-slate-400 w-5 h-5 pointer-events-none" />
+        
+        {tags.map((tag, idx) => (
+          <span key={idx} className="bg-purple-500/20 text-purple-300 text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1 font-bold tracking-wide z-10 shadow-sm border border-purple-500/20">
+            {tag}
+            <button onClick={(e) => { e.stopPropagation(); removeTag(idx); }} disabled={disabled} className="hover:text-purple-200 ml-1">×</button>
+          </span>
+        ))}
+        
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => { setInput(e.target.value); setIsOpen(true); }}
+          onFocus={() => setIsOpen(true)}
+          onBlur={() => setTimeout(() => setIsOpen(false), 200)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && input.trim()) {
+              e.preventDefault();
+              addTag(input);
+            }
+          }}
+          disabled={disabled}
+          placeholder={tags.length === 0 ? placeholder : "Add niche..."}
+          className="flex-1 min-w-[140px] bg-transparent text-white text-base outline-none placeholder:text-slate-500 z-10 ml-1 mt-0.5"
+        />
+      </div>
+
+      <AnimatePresence>
+        {isOpen && !disabled && (
+          <motion.div 
+            initial={{ opacity: 0, y: -5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -5 }}
+            className="absolute top-[calc(100%+8px)] left-0 right-0 bg-[#1a1a1a] border border-white/10 rounded-xl overflow-hidden shadow-2xl z-50 max-h-60 overflow-y-auto"
+          >
+            {filtered.map(s => (
+              <div 
+                key={s} 
+                onClick={() => addTag(s)}
+                className="px-4 py-3 hover:bg-white/5 cursor-pointer text-sm text-slate-300 transition-colors border-b border-white/[0.02] last:border-0"
+              >
+                {s}
+              </div>
+            ))}
+            {input && !PREDEFINED_NICHES.some(n => n.toLowerCase() === input.toLowerCase()) && (
+              <div 
+                onClick={() => addTag(input)}
+                className="px-4 py-3 bg-purple-500/10 hover:bg-purple-500/20 cursor-pointer text-sm text-purple-400 font-bold transition-colors"
+              >
+                + Add "{input}"
+              </div>
+            )}
+            {filtered.length === 0 && !input && (
+              <div className="px-4 py-3 text-sm text-slate-500 italic">Type to search or create new...</div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
 export default function App() {
   const [page, setPage] = useState("home");
   const [niche, setNiche] = useState("");
@@ -263,36 +410,31 @@ export default function App() {
               <div className="glass-panel p-3 rounded-[2rem] max-w-5xl mx-auto w-full relative group">
                 <div className="absolute inset-0 bg-gradient-to-r from-purple-500/10 to-blue-500/10 rounded-[2rem] opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none" />
                 
-                <div className="flex flex-col md:flex-row gap-3 relative z-10">
-                  <div className="flex-1 relative">
-                    <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
-                    <input
-                      type="text"
+                <div className="flex flex-col md:flex-row gap-3 relative z-20 items-stretch">
+                  <AutocompleteTagInput
                       placeholder="e.g. Plumbers, Roofers, Clinics..."
                       value={niche}
-                      onChange={(e) => setNiche(e.target.value)}
+                      onChange={(val) => setNiche(val)}
                       disabled={loading}
-                      className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-purple-500/50 outline-none transition-all"
-                    />
-                  </div>
-                  <div className="flex-1 relative">
-                    <Map className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                  />
+                  <div className="flex-1 relative flex flex-col">
+                    <Map className="absolute left-4 top-[22px] text-slate-400 w-5 h-5" />
                     <input
                       type="text"
                       placeholder="e.g. Texas, Ontario, New York, Toronto..."
                       value={location}
                       onChange={(e) => setLocation(e.target.value)}
                       disabled={loading}
-                      className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-purple-500/50 outline-none transition-all"
+                      className="w-full h-full min-h-[64px] bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-purple-500/50 outline-none transition-all"
                     />
                   </div>
-                  <div className="flex-1 relative">
-                    <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                  <div className="flex-1 relative flex flex-col">
+                    <Filter className="absolute left-4 top-[22px] text-slate-400 w-5 h-5" />
                     <select
                       value={filterType}
                       onChange={(e) => setFilterType(e.target.value)}
                       disabled={loading}
-                      className="w-full h-16 bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 text-white focus:bg-white/10 focus:border-purple-500/50 outline-none transition-all appearance-none"
+                      className="w-full h-full min-h-[64px] bg-white/5 border border-white/10 rounded-2xl pl-12 pr-4 text-white focus:bg-white/10 focus:border-purple-500/50 outline-none transition-all appearance-none"
                     >
                       {filterOptions.map((opt) => (
                         <option key={opt.value} value={opt.value} className="bg-gray-900 text-white">
@@ -305,7 +447,7 @@ export default function App() {
                   <button
                     onClick={startScraping}
                     disabled={loading || !niche || !location}
-                    className="h-16 px-10 rounded-2xl font-bold text-white bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 hover:shadow-[0_0_40px_-10px_rgba(168,85,247,0.5)] disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                    className="h-full min-h-[64px] px-10 rounded-2xl font-bold text-white bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-500 hover:to-blue-500 hover:shadow-[0_0_40px_-10px_rgba(168,85,247,0.5)] disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
                   >
                     {loading ? <Loader2 className="animate-spin w-5 h-5" /> : <Play className="w-5 h-5 fill-current" />}
                     <span>{loading ? "Scanning" : "Start"}</span>
@@ -314,16 +456,13 @@ export default function App() {
                 
                 {/* Mode, Workers, and CSV row */}
                 <div className="flex flex-col md:flex-row gap-3 mt-3 relative z-10">
-                  <div className="flex-1 relative">
-                    <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-                    <input
-                      type="text"
-                      placeholder="Exclude keywords (e.g. massage, school)"
+                  <div className="flex-1 relative flex flex-col">
+                    <Filter className="absolute left-4 top-[20px] text-slate-400 w-4 h-4 z-10" />
+                    <TagInput
+                      placeholder="Exclude words (e.g. massage, school)"
                       value={negativeKeywords}
-                      onChange={(e) => setNegativeKeywords(e.target.value)}
+                      onChange={(val) => setNegativeKeywords(val)}
                       disabled={loading}
-                      className="w-full h-14 bg-white/5 border border-white/10 rounded-xl pl-10 pr-4 text-white placeholder:text-slate-500 focus:bg-white/10 focus:border-rose-500/50 outline-none transition-all text-sm"
-                      title="Skip any leads whose name or category matches these words"
                     />
                   </div>
                   <div className="flex-1 relative">
@@ -333,9 +472,9 @@ export default function App() {
                       disabled={loading || uploadLoading}
                       className="w-full h-14 bg-white/5 border border-white/10 rounded-xl px-4 text-white hover:bg-white/10 focus:border-purple-500/50 outline-none transition-all appearance-none text-sm"
                     >
-                      <option value="normal" className="bg-gray-900">Mode: Normal (Memory Safe)</option>
-                      <option value="hybrid" className="bg-gray-900">Mode: Hybrid (Fast & Popular)</option>
-                      <option value="parallel" className="bg-gray-900">Mode: Parallel (RAM Heavy)</option>
+                      <option value="parallel" className="bg-gray-900">Mode: Hyper-Scale (Max Speed, Multiple Windows)</option>
+                      <option value="hybrid" className="bg-gray-900">Mode: Standard (1 Window, Fast)</option>
+                      <option value="normal" className="bg-gray-900">Mode: Background (Single Threaded)</option>
                     </select>
                   </div>
                   <div className="flex-1 relative">
@@ -347,9 +486,14 @@ export default function App() {
                     >
                       <option value="1" className="bg-gray-900">1 Background Worker</option>
                       <option value="2" className="bg-gray-900">2 Background Workers</option>
-                      <option value="3" className="bg-gray-900">3 Background Workers (8GB RAM)</option>
+                      <option value="3" className="bg-gray-900">3 Background Workers</option>
                       <option value="4" className="bg-gray-900">4 Background Workers</option>
-                      <option value="5" className="bg-gray-900">5 Background Workers (16GB RAM)</option>
+                      <option value="5" className="bg-gray-900">5 Background Workers (8GB RAM)</option>
+                      <option value="6" className="bg-gray-900">6 Background Workers</option>
+                      <option value="7" className="bg-gray-900">7 Background Workers</option>
+                      <option value="8" className="bg-gray-900">8 Background Workers</option>
+                      <option value="9" className="bg-gray-900">9 Background Workers</option>
+                      <option value="10" className="bg-gray-900">10 Background Workers (16GB RAM)</option>
                     </select>
                   </div>
                 </div>
@@ -580,20 +724,23 @@ export default function App() {
                         >
                           <option value="1" className="bg-gray-900">1 Background Worker</option>
                           <option value="2" className="bg-gray-900">2 Background Workers</option>
-                          <option value="3" className="bg-gray-900">3 Background Workers (8GB RAM)</option>
+                          <option value="3" className="bg-gray-900">3 Background Workers</option>
                           <option value="4" className="bg-gray-900">4 Background Workers</option>
-                          <option value="5" className="bg-gray-900">5 Background Workers (16GB RAM)</option>
+                          <option value="5" className="bg-gray-900">5 Background Workers (8GB RAM)</option>
+                          <option value="6" className="bg-gray-900">6 Background Workers</option>
+                          <option value="7" className="bg-gray-900">7 Background Workers</option>
+                          <option value="8" className="bg-gray-900">8 Background Workers</option>
+                          <option value="9" className="bg-gray-900">9 Background Workers</option>
+                          <option value="10" className="bg-gray-900">10 Background Workers (16GB RAM)</option>
                         </select>
                       </div>
                       <div>
                         <label className="text-xs text-slate-500 font-bold uppercase tracking-wider block mb-2">Negative Keywords (Optional)</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. school, government"
+                        <TagInput
+                          placeholder="Exclude words (e.g. school, government)"
                           value={negativeKeywords}
-                          onChange={(e) => setNegativeKeywords(e.target.value)}
+                          onChange={(val) => setNegativeKeywords(val)}
                           disabled={uploadLoading}
-                          className="w-full h-12 bg-white/5 border border-white/10 rounded-xl px-4 text-white placeholder:text-slate-500 outline-none transition-all text-sm"
                         />
                       </div>
                     </div>
@@ -667,8 +814,7 @@ export default function App() {
                     
                     <div className="flex justify-between items-start mb-4">
                       <div>
-                        <h3 className="font-bold text-white text-lg capitalize">{j.niche}</h3>
-                        <p className="text-sm text-slate-400 flex items-center gap-1 mt-1"><MapPin className="w-3 h-3"/> {j.location}</p>
+                        <h3 className="font-bold text-white text-lg capitalize">{j.niche} - {j.location}</h3>
                       </div>
                       <span className={`px-2 py-1 rounded-md text-[10px] font-bold uppercase ${j.status === 'completed' ? 'bg-emerald-500/20 text-emerald-400' : j.status === 'running' ? 'bg-blue-500/20 text-blue-400' : 'bg-slate-500/20 text-slate-400'}`}>
                         {j.status}
