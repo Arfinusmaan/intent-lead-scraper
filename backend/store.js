@@ -320,6 +320,7 @@ export function loadJobsFromDisk() {
     } catch (err) {
       console.error(`⚠️ Failed to load jobs DB:`, err.message);
     }
+  }
 }
 
 export function saveJobsToDisk() {
