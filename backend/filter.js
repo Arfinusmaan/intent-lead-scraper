@@ -43,9 +43,11 @@ const NICHE_PROFILES = {
       'mold testing', 'air quality', 'asbestos'
     ],
     signals: [
-      'water damage', 'water restoration', 'flood', 'storm damage', 'storm restoration',
-      'disaster restoration', 'emergency restoration', 'sewage', 'burst pipe',
-      'leak', 'moisture', 'dehumidif', 'dry-out', 'dryout', 'water mitigation', 'restoration'
+      'water damage', 'water restoration', 'flood damage', 'flood restoration',
+      'storm damage', 'storm restoration', 'disaster restoration', 'emergency restoration',
+      'water mitigation', 'structural drying', 'water extraction', 'dehumidif',
+      'dry-out', 'dryout', 'sewage cleanup', 'burst pipe cleanup', 'water cleanup',
+      'restoration service', 'restoration company'
     ]
   },
   'mold_remediation': {
