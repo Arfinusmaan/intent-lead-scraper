@@ -36,8 +36,7 @@ const NICHE_PROFILES = {
       'flood damage restoration', 'flood restoration', 'flood service',
       'disaster restoration', 'storm damage restoration', 'storm restoration',
       'damage restoration', 'emergency restoration', 'property restoration',
-      'building restoration service', 'restoration service', 'restoration company',
-      'general contractor', 'construction company'  // often do water damage
+      'building restoration service', 'restoration service', 'restoration company'
     ],
     deny: [
       'mold remediation service', 'mold removal service', 'mold inspection',
@@ -46,7 +45,7 @@ const NICHE_PROFILES = {
     signals: [
       'water damage', 'water restoration', 'flood', 'storm damage', 'storm restoration',
       'disaster restoration', 'emergency restoration', 'sewage', 'burst pipe',
-      'leak', 'moisture', 'dehumidif', 'dry-out', 'dryout', 'water mitigation'
+      'leak', 'moisture', 'dehumidif', 'dry-out', 'dryout', 'water mitigation', 'restoration'
     ]
   },
   'mold_remediation': {
@@ -67,13 +66,12 @@ const NICHE_PROFILES = {
     accept: [
       'fire damage restoration service', 'fire restoration', 'smoke damage restoration',
       'smoke restoration', 'disaster restoration', 'building restoration service',
-      'property restoration', 'restoration service', 'restoration company',
-      'general contractor'
+      'property restoration', 'restoration service', 'restoration company'
     ],
     deny: [],
     signals: [
       'fire damage', 'fire restoration', 'smoke damage', 'smoke restoration',
-      'soot', 'char', 'burn', 'fire and smoke', 'disaster'
+      'soot', 'char', 'burn', 'fire and smoke', 'disaster', 'restoration'
     ]
   },
   'flood_damage': {
@@ -87,32 +85,31 @@ const NICHE_PROFILES = {
     ],
     signals: [
       'flood', 'water damage', 'storm damage', 'disaster', 'emergency restoration',
-      'sewage backup', 'burst pipe', 'basement flooding'
+      'sewage backup', 'burst pipe', 'basement flooding', 'restoration'
     ]
   },
   'disaster_restoration': {
     accept: [
       'disaster restoration', 'building restoration service', 'water damage restoration service',
       'fire damage restoration service', 'flood damage restoration',
-      'storm damage restoration', 'property restoration', 'restoration service',
-      'general contractor'
+      'storm damage restoration', 'property restoration', 'restoration service'
     ],
     deny: [],
     signals: [
       'disaster', 'emergency', 'storm', 'flood', 'fire', 'water damage',
-      'catastrophe', 'property restoration', 'full restoration'
+      'catastrophe', 'property restoration', 'full restoration', 'restoration'
     ]
   },
   'storm_damage': {
     accept: [
-      'storm damage restoration', 'disaster restoration', 'roofing contractor',
+      'storm damage restoration', 'disaster restoration',
       'water damage restoration service', 'flood damage restoration',
-      'building restoration service', 'general contractor', 'restoration service'
+      'building restoration service', 'restoration service'
     ],
     deny: [],
     signals: [
       'storm', 'hail', 'wind damage', 'tornado', 'hurricane', 'tree damage',
-      'roof damage', 'water intrusion', 'flood'
+      'roof damage', 'water intrusion', 'flood', 'restoration'
     ]
   }
 };
@@ -127,7 +124,7 @@ const ABSOLUTE_BLOCKS = [
   'massage therapy', 'massage parlor',
   'restaurant', 'fast food', 'bakery', 'cafe', 'coffee shop', 'night club', 'catering service',
   'clothing store', 'jewelry store', 'antique shop', 'thrift store', 'pawn shop',
-  'insurance agent', 'real estate agent', 'real estate agency', 'mortgage broker',
+  'insurance agent', 'real estate agent', 'real estate agency', 'real estate builder', 'real estate developer', 'property developer', 'mortgage broker',
   'law firm', 'accountant', 'cpa firm',
   'computer repair', 'phone repair', 'cell phone repair',
   'landscaping company', 'lawn care service', 'lawn mowing',
@@ -220,12 +217,11 @@ export function classifyLead(lead, keyword, exactMatch = false) {
       }
     }
 
-    // Also check against the officialCat's own aliases/accepted
+    // Also check against the officialCat's direct aliases and accepted categories (NOT relatedCategories)
     const officialAccepted = [
       targetName,
       ...(officialCat.aliases || []).map(a => normalize(a)),
-      ...(officialCat.acceptedCategories || []).map(a => normalize(a)),
-      ...(officialCat.relatedCategories || []).map(a => normalize(a))
+      ...(officialCat.acceptedCategories || []).map(a => normalize(a))
     ];
     const isOfficialMatch = officialAccepted.some(a => a.length > 3 && (googleCat.includes(a) || a.includes(googleCat)));
     if (isOfficialMatch) {
