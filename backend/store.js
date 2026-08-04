@@ -355,17 +355,11 @@ export function saveJobsToDisk() {
   try {
     const dataToSave = {};
     for (const [id, job] of jobs.entries()) {
-      // ✅ Save ALL jobs — not just pinned ones.
-      // This ensures leads are never lost even if the user forgets to pin.
-      // We strip the full leads array to save space; the CSV file on disk is
-      // the authoritative data source. We only need the metadata.
-      const { leads, logs, ...meta } = job;
-      dataToSave[id] = {
-        ...meta,
-        leadCount: leads ? leads.length : 0,
-        // Keep leads in DB only for pinned jobs (needed for in-memory /csv route)
-        leads: job.pinned ? leads : []
-      };
+      // Save metadata + leads for all jobs.
+      // The leads array doubles as in-memory source for the /results endpoint;
+      // stripping it would cause 0-count in UI after server restart.
+      const { logs, ...rest } = job;  // strip only logs (verbose, not needed after restart)
+      dataToSave[id] = { ...rest };
     }
     fs.writeFileSync(DB_FILE, JSON.stringify(dataToSave, null, 2));
   } catch (err) {

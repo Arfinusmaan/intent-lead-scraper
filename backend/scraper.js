@@ -21,7 +21,7 @@ function isSharedPlatform(domain) {
 // Franchise brand roots whose domains are shared across many legitimate locations.
 // Multiple SERVPRO/PaulDavis locations share the same root domain — never dedup them.
 const FRANCHISE_DOMAIN_ROOTS = [
-  'servpro', 'pauldavis', 'pauldasvis', 'rainbow restoration', 'rainbowrestoration',
+  'servpro', 'pauldavis', 'rainbowrestoration',
   '911restoration', 'puroclean', 'restorationmaster', 'servicemaster',
   'firstonsite', 'rytech', 'restoration1', 'jenkinsrestorations',
   'blackmonmooring', 'bmscat', 'blusky', 'dkiservices',
@@ -551,28 +551,40 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
           // Capture Google Maps URL now that the place pane is open
           const mapsUrl = page.url();
           
-          // CRITICAL FIX: Locate the active, visible side pane container
+          // Locate the detail pane — it's the div that has the business's place URL in it
+          // or the role=main that contains the phone button.
           let sidePane = null;
           try {
+              // Approach 1: aria-label matches the business name exactly
               const escapedName = name.replace(/"/g, '\\"');
               const exactPane = page.locator(`div[role="main"][aria-label="${escapedName}"]`).first();
               if (await exactPane.count() > 0) {
                   sidePane = exactPane;
-              } else {
+              }
+          } catch {}
+          
+          if (!sidePane) {
+              try {
+                  // Approach 2: Find the div[role=main] that contains a phone button
+                  // This reliably identifies the business detail panel, not the results list
                   const panes = page.locator('div[role="main"]');
                   const count = await panes.count();
                   for (let k = 0; k < count; k++) {
                       const p = panes.nth(k);
-                      const pText = await p.textContent().catch(() => "");
-                      if (pText && pText.includes(name)) {
+                      const hasPhone = await p.locator('button[data-item-id^="phone:tel:"]').count().catch(() => 0);
+                      const hasAddr = await p.locator('button[data-item-id="address"]').count().catch(() => 0);
+                      const hasWeb = await p.locator('a[data-item-id="authority"]').count().catch(() => 0);
+                      if (hasPhone > 0 || hasAddr > 0 || hasWeb > 0) {
                           sidePane = p;
                           break;
                       }
                   }
-              }
-          } catch {}
+              } catch {}
+          }
+          
+          // Absolute fallback: first role=main that isn't the results feed
           if (!sidePane) {
-              sidePane = page.locator('div[role="main"]').first();
+              sidePane = page.locator('div[role="main"]').last();
           }
 
            // CRITICAL FIX: Avoid grabbing stale details from previous pane.
@@ -583,29 +595,44 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
            let address = "";
            let detailsUpdated = false;
  
-           for (let attempt = 0; attempt < 5; attempt++) {
-               const phoneLocator = sidePane.locator('button[data-item-id^="phone:tel:"]').first();
-               const webLocator = sidePane.locator('a[data-item-id="authority"]').first();
-               const addrLocator = sidePane.locator('button[data-item-id="address"]').first();
- 
-               // Check if elements exist in DOM before querying to avoid 500ms Playwright wait times
-               phone = (await phoneLocator.count() > 0) ? await phoneLocator.textContent().catch(() => "") : "";
-               website = (await webLocator.count() > 0) ? await webLocator.getAttribute("href").catch(() => "") : "";
-               address = (await addrLocator.count() > 0) ? await addrLocator.textContent().catch(() => "") : "";
+           // Up to 8 attempts × 500ms = 4 seconds max wait for phone/website to load
+           for (let attempt = 0; attempt < 8; attempt++) {
+               // Try scoped selectors on sidePane first, then fall back to page-level
+               const phoneLocator = sidePane
+                   ? sidePane.locator('button[data-item-id^="phone:tel:"]').first()
+                   : page.locator('button[data-item-id^="phone:tel:"]').first();
+               const webLocator = sidePane
+                   ? sidePane.locator('a[data-item-id="authority"]').first()
+                   : page.locator('a[data-item-id="authority"]').first();
+               const addrLocator = sidePane
+                   ? sidePane.locator('button[data-item-id="address"]').first()
+                   : page.locator('button[data-item-id="address"]').first();
+
+               phone = (await phoneLocator.count().catch(() => 0) > 0)
+                   ? await phoneLocator.textContent().catch(() => "") : "";
+               website = (await webLocator.count().catch(() => 0) > 0)
+                   ? await webLocator.getAttribute("href").catch(() => "") : "";
+               address = (await addrLocator.count().catch(() => 0) > 0)
+                   ? await addrLocator.textContent().catch(() => "") : "";
+
+               // If we still got nothing, try page-level fallback (bypasses bad sidePane scope)
+               if (!phone && !website) {
+                   phone = await page.locator('button[data-item-id^="phone:tel:"]').first().textContent().catch(() => "") || "";
+                   website = await page.locator('a[data-item-id="authority"]').first().getAttribute("href").catch(() => "") || "";
+               }
  
                const phoneClean = cleanPhone(phone).replace(/[^\d]/g, '');
                const websiteClean = website ? website.toLowerCase().trim().replace('www.', '') : '';
  
                // Only consider stale if BOTH phone AND website match the previous lead
-               // (address alone is too unreliable — offices share buildings)
                const phoneStale = phoneClean && lastScrapedDetails && phoneClean === lastScrapedDetails.phone.replace(/[^\d]/g, '');
                const websiteStale = websiteClean && lastScrapedDetails && websiteClean === lastScrapedDetails.website.toLowerCase().trim().replace('www.', '');
  
                if (phoneStale && websiteStale) {
-                   await page.waitForTimeout(400);
-               } else if (!phoneClean && !websiteClean && attempt < 3) {
-                   // If both are empty, the pane details might still be loading in the DOM. Wait and retry.
-                   await page.waitForTimeout(300);
+                   await page.waitForTimeout(500);
+               } else if (!phoneClean && !websiteClean && attempt < 5) {
+                   // Both empty — pane still loading, wait and retry
+                   await page.waitForTimeout(500);
                } else {
                    detailsUpdated = true;
                    break;
@@ -629,14 +656,11 @@ export async function scrapeGoogleMaps(niche, location, filterType, negativeKeyw
                 if (match) {
                     category = match[1].trim();
                 } else {
-                    // FOOLPROOF FALLBACK: Google Maps often drops the button and the middle dot if CSS is broken.
-                    // But the category text is ALWAYS injected into the side pane somewhere.
+                    // FOOLPROOF FALLBACK: Scan raw pane text for niche keyword
                     const lowerText = sidePaneText.toLowerCase();
                     const lowerNiche = niche.toLowerCase();
                     if (lowerText.includes(lowerNiche)) {
                         category = niche;
-                    } else if (lowerText.includes('water damage restoration service')) {
-                        category = 'Water damage restoration service';
                     }
                 }
             }
@@ -1124,22 +1148,27 @@ export async function filterCSVByGoogleCategory(leads, jobId, workerCount = 10, 
             }
           }
 
-          // Use the Niche Intelligence Engine for category-based CSV filtering
-          const csvClassification = classifyBusiness('restoration', lead.business_name, category, sidePaneText, '');
+          // Classify using the same filter engine as the main scraper.
+          // Use the job's actual niche keyword — not classification_reason which is a sentence.
+          const jobNiche = getJob(jobId)?.niche || 'water damage restoration';
+          const csvClassification = classifyLead(
+            { name: lead.business_name, categories: [category, sidePaneText].filter(Boolean) },
+            jobNiche,
+            false
+          );
 
-          if (csvClassification.status !== 'rejected') {
-            log(`✅ KEPT: ${lead.business_name} [score:${csvClassification.score}] (Category: "${category || 'Unknown'}")`, jobId);
+          if (csvClassification.status === 'KEEP') {
+            log(`✅ KEPT: ${lead.business_name} (Category: "${category || 'Unknown'}")`, jobId);
             const enriched = {
               ...lead,
               maps_url: finalMapsUrl,
-              niche_match_score: csvClassification.score,
               classification_reason: csvClassification.reason,
-              classification_status: csvClassification.status,
+              classification_status: 'accepted',
             };
             kept.push(enriched);
             updateJob(jobId, { leads: [enriched] });
           } else {
-            log(`❌ DROPPED: ${lead.business_name} [score:${csvClassification.score}] — ${csvClassification.reason}`, jobId);
+            log(`❌ DROPPED: ${lead.business_name} — ${csvClassification.reason}`, jobId);
           }
         } catch (err) {
           log(`⚠️ Error on ${lead.business_name}: ${err.message?.slice(0, 60)}`, jobId);

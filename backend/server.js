@@ -1,6 +1,5 @@
 import express from 'express';
 import cors from 'cors';
-import bodyParser from 'body-parser';
 import { nanoid } from 'nanoid';
 import multer from 'multer';
 import csvParser from 'csv-parser';
@@ -17,7 +16,7 @@ const PORT = 3001;
 const upload = multer({ storage: multer.memoryStorage() });
 
 app.use(cors());
-app.use(bodyParser.json());
+app.use(express.json());
 
 // Initialize store from disk
 loadJobsFromDisk();
